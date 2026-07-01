@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import SimpleITK as sitk
 
-from src.dicom_parser import DICOMParser
+from src.dicom_parser import DICOMParser, DICOMSeries
 from src.roi_handler import ROIHandler
 from src.feature_extractor import RadiomicsFeatureExtractor
 from src.visualization import ImageViewer
@@ -40,12 +40,16 @@ def beginner_mode():
     # Session state for storing parsed data
     if 'dicom_image' not in st.session_state:
         st.session_state.dicom_image = None
+    if 'dicom_series' not in st.session_state:
+        st.session_state.dicom_series = None
     if 'rois' not in st.session_state:
         st.session_state.rois = None
     if 'roi_handler' not in st.session_state:
         st.session_state.roi_handler = None
     if 'verification_complete' not in st.session_state:
         st.session_state.verification_complete = False
+    if 'feature_extractor' not in st.session_state:
+        st.session_state.feature_extractor = None
 
     st.subheader("步骤 1：上传 DICOM 影像")
     dicom_upload = st.file_uploader(
@@ -70,6 +74,9 @@ def beginner_mode():
             series = parser.load_series(str(temp_path))
 
             if series and series.instances:
+                # Store the DICOM series for later use
+                st.session_state.dicom_series = series
+
                 # Convert first instance to SimpleITK image for visualization
                 first_instance = series.instances[0]
                 ds = first_instance.dataset
@@ -164,10 +171,15 @@ def beginner_mode():
     # Show feature extraction if verification is complete
     if st.session_state.verification_complete:
         st.subheader("步骤 4：提取特征")
+
+        # Initialize feature extractor
+        if st.session_state.feature_extractor is None:
+            st.session_state.feature_extractor = RadiomicsFeatureExtractor()
+
         rois = st.session_state.rois
         roi_names = handler.get_roi_names(rois)
         selected_rois = st.multiselect(
-            "选择要提取特征的 ROI",
+            "选择要提特征的 ROI",
             roi_names,
             default=roi_names[:1],
             key='feature_rois'
@@ -175,8 +187,51 @@ def beginner_mode():
 
         if st.button("🚀 一键提取特征"):
             with st.spinner("正在提取特征..."):
-                st.info("特征提取功能开发中...")
-                st.write("选中的 ROI:", selected_rois)
+                try:
+                    # Get the feature extractor
+                    feature_extractor = st.session_state.feature_extractor
+                    dicom_series = st.session_state.dicom_series
+                    dicom_image = st.session_state.dicom_image
+
+                    # Convert DICOM series to SimpleITK image using the feature extractor
+                    if dicom_series is not None:
+                        sitk_image = feature_extractor.convert_dicom_series_to_sitk(dicom_series)
+                    else:
+                        sitk_image = dicom_image
+
+                    # Process selected ROIs
+                    masks_dict = {}
+                    for roi in rois:
+                        if roi.name in selected_rois:
+                            with st.spinner(f"正在处理 ROI: {roi.name}"):
+                                mask = feature_extractor.convert_roi_to_mask(roi, dicom_series, sitk_image)
+                                masks_dict[roi.name] = mask
+
+                    # Extract features for all ROIs
+                    if masks_dict:
+                        df_features = feature_extractor.extract_features_for_rois(sitk_image, masks_dict)
+
+                        if not df_features.empty:
+                            st.success(f"特征提取完成！共提取了 {len(df_features)} 个 ROI 的特征")
+
+                            # Display features
+                            st.subheader("特征矩阵")
+                            st.dataframe(df_features, use_container_width=True)
+
+                            # Download button
+                            csv = df_features.to_csv(index=False)
+                            st.download_button(
+                                label="📥 下载特征矩阵 (CSV)",
+                                data=csv,
+                                file_name="radiomics_features.csv",
+                                mime="text/csv"
+                            )
+                        else:
+                            st.warning("未能提取到任何特征")
+
+                except Exception as e:
+                    st.error(f"特征提取失败: {e}")
+                    st.exception(e)
 
 
 def advanced_mode():
