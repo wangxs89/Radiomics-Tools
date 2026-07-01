@@ -44,7 +44,7 @@ class RadiomicsFeatureExtractor:
 
         # 配置滤波器
         if 'enabledImageTypes' in self.filter_settings:
-            self.extractor._settings['enabledImageTypes'] = self.filter_settings['enabledImageTypes']
+            self.extractor.settings['enabledImageTypes'] = self.filter_settings['enabledImageTypes']
 
     def convert_dicom_series_to_sitk(self, dicom_series) -> sitk.Image:
         """将 DICOM 序列转换为 SimpleITK Image"""
