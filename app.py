@@ -3,6 +3,7 @@ import streamlit as st
 import tempfile
 from pathlib import Path
 import pandas as pd
+import numpy as np
 import SimpleITK as sitk
 
 from src.dicom_parser import DICOMParser, DICOMSeries
@@ -14,32 +15,185 @@ from src.results_exporter import ResultsExporter
 from src.image_preprocessor import ImagePreprocessor
 from src.filters import RadiomicsFilterConfig
 from src.report_generator import ReportGenerator
+from src.ui_theme import APP_CSS, get_step_indicator_html
 
 
 st.set_page_config(
-    page_title="影像组学 Web App",
-    page_icon="🏥",
+    page_title="Radiomics Tool",
+    page_icon="",
     layout="wide"
 )
 
+# Inject custom CSS
+st.markdown(APP_CSS, unsafe_allow_html=True)
+
 
 def main():
-    st.title("🏥 影像组学 Web App")
-    st.markdown("---")
+    # Header
+    st.markdown('''
+    <div class="main-header">
+        <h1>Radiomics Tool</h1>
+        <p>Medical Image Feature Extraction & Analysis Platform</p>
+    </div>
+    ''', unsafe_allow_html=True)
 
-    st.sidebar.header("模式选择")
-    mode = st.sidebar.radio("选择操作模式", ["初级模式", "高级模式"])
+    st.sidebar.markdown("### Mode")
+    mode = st.sidebar.radio("", ["Beginner", "Advanced"],
+                          label_visibility="collapsed")
 
-    if mode == "初级模式":
+    if mode == "Beginner":
         beginner_mode()
     else:
         advanced_mode()
 
 
+def load_dicom_and_rtstruct(folder_path: Path, key_prefix: str = ''):
+    """Shared DICOM scan + series selection + HU conversion + RTSTRUCT loading.
+
+    Returns:
+        (dicom_image, rois, handler, dicom_loaded, roi_loaded) or None
+    """
+    import pydicom
+
+    all_files = [f for f in folder_path.iterdir() if f.is_file()]
+    st.info(f"Found {len(all_files)} files in folder")
+
+    # File-level modality scan
+    file_modalities = {}
+    for f in all_files:
+        try:
+            ds = pydicom.dcmread(str(f), stop_before_pixels=True)
+            modality = str(getattr(ds, 'Modality', ''))
+            if modality:
+                file_modalities[f] = modality
+        except Exception:
+            continue
+
+    # SimpleITK series grouping
+    reader = sitk.ImageSeriesReader()
+    series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(str(folder_path))
+
+    series_info = []
+    if series_ids:
+        for sid in series_ids:
+            file_names = reader.GetGDCMSeriesFileNames(str(folder_path), sid)
+            first_ds = pydicom.dcmread(str(file_names[0]), stop_before_pixels=True)
+            modality = str(getattr(first_ds, 'Modality', 'UNKNOWN'))
+            series_desc = str(getattr(first_ds, 'SeriesDescription', ''))
+            series_info.append({
+                'id': sid, 'files': file_names,
+                'modality': modality, 'description': series_desc,
+                'count': len(file_names)
+            })
+
+    rtstruct_files = [f for f, m in file_modalities.items() if m == 'RTSTRUCT']
+    dose_files = [f for f, m in file_modalities.items() if m == 'RTDOSE']
+
+    imaging_series = [s for s in series_info if s['modality'] in ('CT', 'MR', 'PT', 'MG', 'US', 'XA', 'DX', 'CR')]
+    dose_series = [s for s in series_info if s['modality'] == 'RTDOSE']
+    other_series = [s for s in series_info if s['modality'] not in ('CT', 'MR', 'PT', 'MG', 'US', 'XA', 'DX', 'CR', 'RTDOSE', 'RTSTRUCT')]
+
+    sitk_image = None
+    dicom_loaded = False
+
+    if imaging_series:
+        st.markdown("**Imaging Series (select):**")
+        for s in imaging_series:
+            label = f"{s['modality']} - {s['description'] or 'Unnamed'} ({s['count']} slices)"
+            st.write(f"- `{label}`")
+
+        if len(imaging_series) > 1:
+            selected_idx = st.selectbox(
+                "Select imaging series to load",
+                range(len(imaging_series)),
+                format_func=lambda i: f"{imaging_series[i]['modality']} - {imaging_series[i]['description'] or 'Unnamed'} ({imaging_series[i]['count']} slices)",
+                key=f'{key_prefix}series_selector'
+            )
+        else:
+            selected_idx = 0
+
+        selected = imaging_series[selected_idx]
+        reader.SetFileNames(selected['files'])
+        sitk_image = reader.Execute()
+
+        first_ds = pydicom.dcmread(str(selected['files'][0]), stop_before_pixels=True)
+        slope = float(getattr(first_ds, 'RescaleSlope', 1.0))
+        intercept = float(getattr(first_ds, 'RescaleIntercept', 0.0))
+
+        original_spacing = sitk_image.GetSpacing()
+        original_origin = sitk_image.GetOrigin()
+        original_dim = sitk_image.GetDimension()
+
+        arr = sitk.GetArrayFromImage(sitk_image).astype(np.float32)
+        if slope != 1.0 or intercept != 0.0:
+            arr = arr * slope + intercept
+
+        new_image = sitk.GetImageFromArray(arr)
+        new_image.SetSpacing(original_spacing)
+        new_image.SetOrigin(original_origin)
+        if new_image.GetDimension() == original_dim:
+            new_image.SetDirection(sitk_image.GetDirection())
+        sitk_image = new_image
+
+        dicom_loaded = True
+        st.success(f"Loaded: {selected['modality']} - {selected['description'] or 'Unnamed'} ({sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]})")
+        st.write(f"**HU range:** {arr.min():.0f} ~ {arr.max():.0f}")
+    else:
+        st.warning("No imaging series found (CT/MR/PET etc.)")
+
+    if dose_series:
+        st.markdown("**Dose Files (RTDOSE):**")
+        for s in dose_series:
+            st.write(f"- `{s['description'] or 'RTDOSE'}` ({s['count']} slices)")
+        st.session_state[f'{key_prefix}dose_series'] = dose_series
+        st.info("Dose files identified — available for dose analysis")
+
+    if other_series:
+        with st.expander(f"Other series ({len(other_series)}, skipped)"):
+            for s in other_series:
+                st.write(f"- {s['modality']}: {s['description'] or 'Unnamed'} ({s['count']} slices)")
+
+    # RTSTRUCT
+    rois = None
+    handler = None
+    roi_loaded = False
+
+    if rtstruct_files:
+        st.markdown("**RTSTRUCT Files Found:**")
+        for rf in rtstruct_files:
+            try:
+                ds = pydicom.dcmread(str(rf), stop_before_pixels=True)
+                desc = str(getattr(ds, 'StructureSetLabel', getattr(ds, 'SeriesDescription', rf.name)))
+                st.write(f"- `{desc}`")
+            except Exception:
+                st.write(f"- `{rf.name}`")
+
+        handler = ROIHandler()
+        rois = handler.load_rtstruct(str(rtstruct_files[0]))
+
+        if rois:
+            roi_loaded = True
+            roi_names = handler.get_roi_names(rois)
+            st.success(f"RTSTRUCT loaded: {len(rois)} ROIs ({', '.join(roi_names)})")
+        else:
+            st.warning("No ROI structures found in RTSTRUCT file")
+    else:
+        st.warning("No RTSTRUCT file found")
+
+    # NIfTI fallback
+    nii_files = list(folder_path.glob("*.nii")) + list(folder_path.glob("*.nii.gz"))
+    if nii_files and not roi_loaded:
+        st.markdown("**NIfTI Mask Files Found:**")
+        for nf in nii_files:
+            st.write(f"- `{nf.name}`")
+        st.info("NIfTI mask support coming soon")
+
+    return sitk_image, rois, handler, dicom_loaded, roi_loaded
+
+
 def beginner_mode():
-    """初级模式：一键提取"""
-    st.header("🟢 初级模式")
-    st.markdown("简单三步：选择文件夹 → 可视化验证 → 提取特征")
+    st.markdown("### Beginner Mode")
+    st.caption("Select folder, verify ROI, extract features — three simple steps.")
 
     # Session state for storing parsed data
     if 'dicom_image' not in st.session_state:
@@ -54,17 +208,31 @@ def beginner_mode():
         st.session_state.verification_complete = False
     if 'feature_extractor' not in st.session_state:
         st.session_state.feature_extractor = None
+    if 'features_df' not in st.session_state:
+        st.session_state.features_df = None
 
-    st.subheader("步骤 1：选择数据文件夹")
-    st.markdown("点击按钮选择包含所有 DICOM 文件（影像 + RTSTRUCT）的文件夹")
+    # Determine current step for indicator
+    if st.session_state.verification_complete:
+        current_step = 2
+    elif st.session_state.dicom_image is not None and st.session_state.rois is not None:
+        current_step = 1
+    else:
+        current_step = 0
+
+    st.markdown(get_step_indicator_html(["Select Data", "Verify ROI", "Extract"], current_step),
+                unsafe_allow_html=True)
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown("#### Select Data Folder")
+    st.caption("Select a folder containing all DICOM files (images + RTSTRUCT)")
 
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("📂 选择文件夹", key='pick_folder_btn'):
+        if st.button("Browse Folder", key='pick_folder_btn'):
             import subprocess
             result = subprocess.run([
                 'osascript', '-e',
-                'set folderPath to POSIX path of (choose folder with prompt "选择 DICOM 数据文件夹")'
+                'set folderPath to POSIX path of (choose folder with prompt "Select DICOM Data Folder")'
             ], capture_output=True, text=True)
             if result.returncode == 0 and result.stdout.strip():
                 st.session_state.dicom_folder = result.stdout.strip()
@@ -72,7 +240,7 @@ def beginner_mode():
 
     with col1:
         dicom_folder = st.text_input(
-            "文件夹路径（也可手动输入）",
+            "Folder path (or type manually)",
             value=st.session_state.get('dicom_folder', ''),
             key='dicom_folder_input'
         )
@@ -84,117 +252,53 @@ def beginner_mode():
 
     if dicom_folder and Path(dicom_folder).exists():
         folder_path = Path(dicom_folder)
+        sitk_image, rois, handler, dicom_loaded, roi_loaded = load_dicom_and_rtstruct(folder_path, key_prefix='')
 
-        # 扫描文件夹内容
-        all_files = [f for f in folder_path.iterdir() if f.is_file()]
-        st.info(f"文件夹中找到 {len(all_files)} 个文件")
-
-        # 1. 加载 DICOM 影像序列
-        try:
-            reader = sitk.ImageSeriesReader()
-            series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(str(folder_path))
-
-            if series_ids:
-                # 显示找到的序列
-                st.markdown("**找到的 DICOM 序列：**")
-                for sid in series_ids:
-                    file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(folder_path), sid)
-                    st.write(f"- 序列 {sid[-8:]}：{len(file_names)} 个切片")
-
-                # 读取第一个序列
-                dicom_names = reader.GetGDCMSeriesFileNames(str(folder_path), series_ids[0])
-                reader.SetFileNames(dicom_names)
-                sitk_image = reader.Execute()
-
-                # 应用 RescaleSlope 和 RescaleIntercept 转换为 HU 值
-                import pydicom
-                first_ds = pydicom.dcmread(str(dicom_names[0]), stop_before_pixels=True)
-                slope = float(getattr(first_ds, 'RescaleSlope', 1.0))
-                intercept = float(getattr(first_ds, 'RescaleIntercept', 0.0))
-
-                if slope != 1.0 or intercept != 0.0:
-                    sitk_image = sitk.Cast(sitk_image, sitk.sitkFloat32)
-                    sitk_image = sitk_image * slope + intercept
-
-                # 显示数据范围
-                arr = sitk.GetArrayFromImage(sitk_image)
-                st.write(f"**影像数据范围：** {arr.min():.0f} ~ {arr.max():.0f} HU")
-
-                st.session_state.dicom_image = sitk_image
-                dicom_loaded = True
-                st.success(f"✅ DICOM 影像加载成功：{sitk_image.GetSize()[0]}×{sitk_image.GetSize()[1]}×{sitk_image.GetSize()[2]} 体素")
-            else:
-                st.warning("未找到 DICOM 影像序列")
-        except Exception as e:
-            st.error(f"加载 DICOM 影像失败: {e}")
-
-        # 2. 自动查找 RTSTRUCT 文件
-        try:
-            rtstruct_files = []
-            for f in all_files:
-                try:
-                    import pydicom
-                    ds = pydicom.dcmread(str(f), stop_before_pixels=True)
-                    if getattr(ds, 'Modality', '') == 'RTSTRUCT':
-                        rtstruct_files.append(f)
-                except Exception:
-                    continue
-
-            if rtstruct_files:
-                st.markdown("**找到的 RTSTRUCT 文件：**")
-                for rf in rtstruct_files:
-                    st.write(f"- `{rf.name}`")
-
-                # 加载第一个 RTSTRUCT
-                handler = ROIHandler()
-                rois = handler.load_rtstruct(str(rtstruct_files[0]))
-
-                if rois:
-                    st.session_state.rois = rois
-                    st.session_state.roi_handler = handler
-                    roi_loaded = True
-                    roi_names = handler.get_roi_names(rois)
-                    st.success(f"✅ RTSTRUCT 加载成功：{len(rois)} 个 ROI（{', '.join(roi_names)}）")
-            else:
-                st.warning("未找到 RTSTRUCT 文件")
-        except Exception as e:
-            st.error(f"加载 RTSTRUCT 失败: {e}")
-
-        # 3. 查找 NIfTI 掩模文件
-        nii_files = list(folder_path.glob("*.nii")) + list(folder_path.glob("*.nii.gz"))
-        if nii_files and not roi_loaded:
-            st.markdown("**找到的 NIfTI 掩模文件：**")
-            for nf in nii_files:
-                st.write(f"- `{nf.name}`")
-            st.info("NIfTI 掩模支持即将上线")
-
+        if sitk_image is not None:
+            st.session_state.dicom_image = sitk_image
+        if rois is not None:
+            st.session_state.rois = rois
+            st.session_state.roi_handler = handler
     elif dicom_folder:
-        st.error(f"文件夹不存在: {dicom_folder}")
+        st.error(f"Folder does not exist: {dicom_folder}")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # Visualization verification step
     if dicom_loaded and roi_loaded and st.session_state.dicom_image is not None and st.session_state.rois is not None:
-        st.markdown("---")
-        st.subheader("步骤 2：可视化验证 ROI 位置")
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown("#### 1. Verify ROI Position")
 
         visualizer = ROIVisualizer(st.session_state.dicom_image)
         rois = st.session_state.rois
-        roi_names = handler.get_roi_names(rois)
+        roi_names = st.session_state.roi_handler.get_roi_names(rois)
 
         # ROI selection
         col1, col2 = st.columns([1, 3])
         with col1:
-            st.markdown("**选择要显示的 ROI**")
+            st.markdown("**Select ROI**")
             selected_rois = st.multiselect(
-                "ROI 列表",
+                "ROI list",
                 roi_names,
                 default=roi_names
             )
 
+            # 4D volume selector
+            volume_index = 0
+            if visualizer.is_4d and visualizer.num_volumes > 1:
+                volume_index = st.slider(
+                    "Volume index",
+                    min_value=0,
+                    max_value=visualizer.num_volumes - 1,
+                    value=0,
+                    key='vol_slider'
+                )
+
             # Slice selector
-            num_slices = visualizer.image_array.shape[0]
+            num_slices = visualizer.num_slices
             if num_slices > 1:
                 slice_index = st.slider(
-                    "切片索引",
+                    "Slice index",
                     min_value=0,
                     max_value=num_slices - 1,
                     value=num_slices // 2
@@ -202,111 +306,128 @@ def beginner_mode():
             else:
                 slice_index = 0
 
+            # Window/Level controls
+            st.markdown("**Window / Level**")
+            preset = st.selectbox("Preset", ["Soft Tissue", "Lung", "Bone", "Brain", "Custom"], key='wl_preset')
+            presets = {
+                "Soft Tissue": (40, 400),
+                "Lung": (-600, 1500),
+                "Bone": (400, 1800),
+                "Brain": (40, 80),
+            }
+            if preset != "Custom":
+                wc, ww = presets[preset]
+            else:
+                wc = st.number_input("Level (center)", value=40, step=10, key='wc_val')
+                ww = st.number_input("Width", value=400, step=50, key='ww_val')
+
         # Display visualization
         with col2:
             fig = visualizer.create_viewer_with_rois(
                 rois=rois,
                 selected_rois=selected_rois,
-                slice_index=slice_index
+                slice_index=slice_index,
+                volume_index=volume_index,
+                window_center=wc,
+                window_width=ww
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.pyplot(fig)
+
+            # 显示切片数据调试信息
+            stats = visualizer.get_slice_stats(volume_index, slice_index)
+            st.caption(f"Data: min={stats['min']:.1f}, max={stats['max']:.1f}, mean={stats['mean']:.1f}, shape={stats['shape']}")
 
         # Confirmation button
-        st.markdown("---")
-        st.markdown("**确认无误后继续**")
-        if st.button("✅ 确认无误，继续提取特征"):
+        st.markdown("#### Confirm & Continue")
+        if st.button("Confirm ROI, Extract Features"):
             st.session_state.verification_complete = True
-            st.success("验证完成！可以继续特征提取")
+            st.success("Verification complete! Proceeding to feature extraction.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # Show feature extraction if verification is complete
     if st.session_state.verification_complete:
-        st.subheader("步骤 3：提取特征")
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown("#### 2. Extract Features")
 
         # Initialize feature extractor
         if st.session_state.feature_extractor is None:
             st.session_state.feature_extractor = RadiomicsFeatureExtractor()
 
         rois = st.session_state.rois
-        roi_names = handler.get_roi_names(rois)
+        roi_names = st.session_state.roi_handler.get_roi_names(rois)
         selected_rois = st.multiselect(
-            "选择要提特征的 ROI",
+            "Select ROIs for feature extraction",
             roi_names,
             default=roi_names[:1],
             key='feature_rois'
         )
 
-        if st.button("🚀 一键提取特征"):
-            with st.spinner("正在提取特征..."):
+        if st.button("Extract Features"):
+            with st.spinner("Extracting features..."):
                 try:
-                    # Get the feature extractor
                     feature_extractor = st.session_state.feature_extractor
-                    dicom_image = st.session_state.dicom_image
+                    sitk_image = st.session_state.dicom_image
 
-                    # sitk_image is already a proper 3D volume from SimpleITK
-                    sitk_image = dicom_image
-
-                    # Process selected ROIs
                     masks_dict = {}
                     for roi in rois:
                         if roi.name in selected_rois:
-                            with st.spinner(f"正在处理 ROI: {roi.name}"):
-                                mask = feature_extractor.convert_roi_to_mask(roi, None, sitk_image)
-                                masks_dict[roi.name] = mask
+                            mask = feature_extractor.convert_roi_to_mask(roi, None, sitk_image)
+                            masks_dict[roi.name] = mask
 
-                    # Extract features for all ROIs
                     if masks_dict:
                         df_features = feature_extractor.extract_features_for_rois(sitk_image, masks_dict)
-
                         if not df_features.empty:
-                            st.success(f"特征提取完成！共提取了 {len(df_features)} 个 ROI 的特征")
-
-                            # Display features
-                            st.subheader("特征矩阵")
-                            st.dataframe(df_features, use_container_width=True)
-
-                            # Download buttons using ResultsExporter
-                            exporter = ResultsExporter()
-
-                            # CSV download
-                            csv = exporter.to_csv(df_features)
-                            st.download_button(
-                                label="📥 下载特征矩阵 (CSV)",
-                                data=csv,
-                                file_name="radiomics_features.csv",
-                                mime="text/csv"
-                            )
-
-                            # Excel download with metadata
-                            metadata = {
-                                '影像尺寸': f"{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]}",
-                                '体素间距': f"{sitk_image.GetSpacing()[0]:.2f}x{sitk_image.GetSpacing()[1]:.2f}x{sitk_image.GetSpacing()[2]:.2f} mm",
-                                'ROI数量': len(masks_dict),
-                                '特征总数': len(df_features.columns) - 1  # excluding ROI column
+                            st.session_state.features_df = df_features
+                            st.session_state.features_metadata = {
+                                'Image size': f"{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]}",
+                                'Voxel spacing': f"{sitk_image.GetSpacing()[0]:.2f}x{sitk_image.GetSpacing()[1]:.2f}x{sitk_image.GetSpacing()[2]:.2f} mm",
+                                'ROI count': len(masks_dict),
+                                'Total features': len(df_features.columns) - 1,
                             }
-                            excel_bytes = exporter.to_excel(df_features, metadata=metadata)
-                            st.download_button(
-                                label="📥 下载特征矩阵 (Excel)",
-                                data=excel_bytes,
-                                file_name="radiomics_features.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-
-                            # Display summary statistics
-                            st.subheader("特征统计摘要")
-                            summary_stats = exporter.get_summary_stats(df_features)
-                            st.dataframe(summary_stats, use_container_width=True)
+                            st.success(f"Feature extraction complete — {len(df_features)} ROI feature rows")
+                            st.rerun()
                         else:
-                            st.warning("未能提取到任何特征")
+                            st.warning("No features could be extracted")
 
                 except Exception as e:
-                    st.error(f"特征提取失败: {e}")
+                    st.error(f"Feature extraction failed: {e}")
                     st.exception(e)
+
+    if st.session_state.features_df is not None:
+        df_features = st.session_state.features_df
+        metadata = st.session_state.get('features_metadata', {})
+
+        st.subheader("Feature Matrix")
+        st.dataframe(df_features, use_container_width=True)
+
+        exporter = ResultsExporter()
+
+        csv = exporter.to_csv(df_features)
+        st.download_button(
+            label="Download Feature Matrix (CSV)",
+            data=csv,
+            file_name="radiomics_features.csv",
+            mime="text/csv"
+        )
+
+        excel_bytes = exporter.to_excel(df_features, metadata=metadata)
+        st.download_button(
+            label="Download Feature Matrix (Excel)",
+            data=excel_bytes,
+            file_name="radiomics_features.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        st.subheader("Feature Summary Statistics")
+        summary_stats = exporter.get_summary_stats(df_features)
+        st.dataframe(summary_stats, use_container_width=True)
 
 
 def advanced_mode():
-    """高级模式：精细控制"""
-    st.header("🟡 高级模式")
-    st.markdown("详细参数控制，满足高级需求")
+    st.markdown("### Advanced Mode")
+    st.caption("Full control: preprocessing, filters, custom features.")
+
 
     # Session state for advanced mode
     if 'adv_dicom_image' not in st.session_state:
@@ -335,16 +456,32 @@ def advanced_mode():
             'glszm': True,
             'ngtdm': True
         }
+    if 'adv_features_df' not in st.session_state:
+        st.session_state.adv_features_df = None
 
-    st.subheader("步骤 1：选择数据文件夹")
+    # Determine current step
+    if st.session_state.adv_verification_complete:
+        adv_step = 5
+    elif st.session_state.adv_dicom_image is not None and st.session_state.adv_rois is not None:
+        adv_step = 4
+    elif st.session_state.adv_dicom_image is not None:
+        adv_step = 1
+    else:
+        adv_step = 0
+
+    st.markdown(get_step_indicator_html(["Data", "Preprocess", "Filters", "Features", "Verify", "Extract"], adv_step),
+                unsafe_allow_html=True)
+
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown("#### Select Data Folder")
 
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("📂 选择文件夹", key='adv_pick_folder_btn'):
+        if st.button("Browse Folder", key='adv_pick_folder_btn'):
             import subprocess
             result = subprocess.run([
                 'osascript', '-e',
-                'set folderPath to POSIX path of (choose folder with prompt "选择 DICOM 数据文件夹")'
+                'set folderPath to POSIX path of (choose folder with prompt "Select DICOM Data Folder")'
             ], capture_output=True, text=True)
             if result.returncode == 0 and result.stdout.strip():
                 st.session_state.adv_dicom_folder = result.stdout.strip()
@@ -352,7 +489,7 @@ def advanced_mode():
 
     with col1:
         dicom_folder = st.text_input(
-            "文件夹路径（也可手动输入）",
+            "Folder path (or type manually)",
             value=st.session_state.get('adv_dicom_folder', ''),
             key='adv_dicom_folder_input'
         )
@@ -360,67 +497,25 @@ def advanced_mode():
             st.session_state.adv_dicom_folder = dicom_folder
 
     dicom_loaded = False
+    roi_loaded = False
 
     if dicom_folder and Path(dicom_folder).exists():
         folder_path = Path(dicom_folder)
+        sitk_image, rois, handler, dicom_loaded, roi_loaded = load_dicom_and_rtstruct(folder_path, key_prefix='adv_')
 
-        try:
-            reader = sitk.ImageSeriesReader()
-            dicom_names = reader.GetGDCMSeriesFileNames(str(folder_path))
-
-            if dicom_names:
-                reader.SetFileNames(dicom_names)
-                sitk_image = reader.Execute()
-
-                # 应用 RescaleSlope 和 RescaleIntercept 转换为 HU 值
-                import pydicom
-                first_ds = pydicom.dcmread(str(dicom_names[0]), stop_before_pixels=True)
-                slope = float(getattr(first_ds, 'RescaleSlope', 1.0))
-                intercept = float(getattr(first_ds, 'RescaleIntercept', 0.0))
-
-                if slope != 1.0 or intercept != 0.0:
-                    sitk_image = sitk.Cast(sitk_image, sitk.sitkFloat32)
-                    sitk_image = sitk_image * slope + intercept
-
-                st.session_state.adv_dicom_image = sitk_image
-                dicom_loaded = True
-                st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
-            else:
-                st.error("未找到有效的 DICOM 序列")
-        except Exception as e:
-            st.error(f"加载 DICOM 失败: {e}")
-
-    st.subheader("步骤 2：上传 ROI 文件")
-    roi_upload = st.file_uploader(
-        "上传 RTSTRUCT 文件",
-        type=['dcm'],
-        accept_multiple_files=False,
-        key='adv_roi_uploader'
-    )
-
-    roi_loaded = False
-    if roi_upload:
-        st.success("已上传 RTSTRUCT 文件")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            roi_file = temp_path / "rtstruct.dcm"
-            roi_file.write_bytes(roi_upload.getvalue())
-
-            handler = ROIHandler()
-            rois = handler.load_rtstruct(str(roi_file))
-
-            if rois:
-                st.session_state.adv_rois = rois
-                st.session_state.adv_roi_handler = handler
-                roi_loaded = True
-                st.success(f"ROI 加载成功，共 {len(rois)} 个 ROI")
+        if sitk_image is not None:
+            st.session_state.adv_dicom_image = sitk_image
+        if rois is not None:
+            st.session_state.adv_rois = rois
+            st.session_state.adv_roi_handler = handler
 
     # Preprocessing options
     st.markdown("---")
-    st.subheader("步骤 3：图像预处理选项")
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown("#### 1. Image Preprocessing")
 
-    preprocess_enabled = st.checkbox("启用图像预处理", value=False)
+    preprocess_enabled = st.checkbox("Enable preprocessing", value=False)
 
     preprocessor = ImagePreprocessor()
     original_image = st.session_state.adv_dicom_image
@@ -430,59 +525,60 @@ def advanced_mode():
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("**重采样**")
-            enable_resample = st.checkbox("启用重采样", value=False)
+            st.markdown("**Resampling**")
+            enable_resample = st.checkbox("Enable resampling", value=False)
             if enable_resample:
-                new_spacing_x = st.number_input("X 方向间距 (mm)", value=1.0, step=0.1)
-                new_spacing_y = st.number_input("Y 方向间距 (mm)", value=1.0, step=0.1)
-                new_spacing_z = st.number_input("Z 方向间距 (mm)", value=1.0, step=0.1)
+                new_spacing_x = st.number_input("X spacing (mm)", value=1.0, step=0.1)
+                new_spacing_y = st.number_input("Y spacing (mm)", value=1.0, step=0.1)
+                new_spacing_z = st.number_input("Z spacing (mm)", value=1.0, step=0.1)
 
-                if st.button("应用重采样"):
+                if st.button("Apply Resampling"):
                     processed_image = preprocessor.resample_image(
                         processed_image,
                         [new_spacing_x, new_spacing_y, new_spacing_z]
                     )
-                    st.success("重采样完成")
+                    st.success("Resampling complete")
 
         with col2:
-            st.markdown("**归一化**")
+            st.markdown("**Normalization**")
             normalize_method = st.selectbox(
-                "归一化方法",
-                ["无", "z-score", "min-max", "percentile"]
+                "Method",
+                ["None", "z-score", "min-max", "percentile"]
             )
-            if normalize_method != "无":
-                if st.button("应用归一化"):
+            if normalize_method != "None":
+                if st.button("Apply Normalization"):
                     processed_image = preprocessor.normalize_image(processed_image, method=normalize_method)
-                    st.success(f"{normalize_method} 归一化完成")
+                    st.success(f"{normalize_method} normalization complete")
 
         col3, col4 = st.columns(2)
         with col3:
-            st.markdown("**灰度离散化**")
-            enable_discretize = st.checkbox("启用离散化", value=False)
+            st.markdown("**Discretization**")
+            enable_discretize = st.checkbox("Enable discretization", value=False)
             if enable_discretize:
-                bin_width = st.number_input("Bin 宽度", value=25.0, step=1.0)
-                if st.button("应用离散化"):
+                bin_width = st.number_input("Bin width", value=25.0, step=1.0)
+                if st.button("Apply Discretization"):
                     processed_image = preprocessor.discretize_image(processed_image, bin_width=bin_width)
-                    st.success("离散化完成")
+                    st.success("Discretization complete")
 
         if processed_image is not original_image:
             st.session_state.adv_preprocessed_image = processed_image
-            st.info("预处理后的图像已保存，将用于特征提取")
+            st.info("Preprocessed image saved for feature extraction")
 
     # Filter selection
-    st.markdown("---")
-    st.subheader("步骤 4：滤波器选择")
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown("#### 2. Filter Selection")
 
     col_filter1, col_filter2 = st.columns(2)
 
     with col_filter1:
-        st.markdown("**可用滤波器**")
+        st.markdown("**Available Filters**")
         filter_options = {k: v['name'] for k, v in RadiomicsFilterConfig.AVAILABLE_FILTERS.items()}
         filter_labels = list(filter_options.values())
         filter_keys = list(filter_options.keys())
 
         selected_filter_labels = st.multiselect(
-            "选择滤波器",
+            "Select filters",
             filter_labels,
             default=[filter_options['original']]
         )
@@ -495,9 +591,9 @@ def advanced_mode():
                     break
 
     with col_filter2:
-        st.markdown("**滤波器参数**")
+        st.markdown("**Filter Parameters**")
         if 'log' in selected_filters:
-            log_sigmas_input = st.text_input("LoG Sigma 值 (逗号分隔)", value="1.0,2.0,3.0")
+            log_sigmas_input = st.text_input("LoG Sigma values (comma-separated)", value="1.0,2.0,3.0")
             log_sigmas = [float(s.strip()) for s in log_sigmas_input.split(',') if s.strip()]
         else:
             log_sigmas = None
@@ -505,7 +601,7 @@ def advanced_mode():
         if 'wavelet' in selected_filters:
             wavelet_types = ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
             selected_wavelet_labels = st.multiselect(
-                "小波类型",
+                "Wavelet types",
                 wavelet_types,
                 default=['LLL', 'LLH', 'LHL', 'LHH']
             )
@@ -519,26 +615,27 @@ def advanced_mode():
         wavelet_types=selected_wavelet_labels
     )
 
-    st.caption(f"已配置 {len(filter_settings.get('enabledImageTypes', []))} 种影像类型")
+    st.caption(f"{len(filter_settings.get('enabledImageTypes', []))} image types configured")
 
     # Feature type selection
-    st.markdown("---")
-    st.subheader("步骤 5：特征类型选择")
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.markdown("#### 3. Feature Types")
 
     col_feat1, col_feat2, col_feat3 = st.columns(3)
 
     with col_feat1:
-        shape_enabled = st.checkbox("形状特征 (Shape)", value=True)
-        firstorder_enabled = st.checkbox("一阶特征 (First Order)", value=True)
-        glcm_enabled = st.checkbox("GLCM 特征", value=True)
+        shape_enabled = st.checkbox("Shape", value=True)
+        firstorder_enabled = st.checkbox("First Order", value=True)
+        glcm_enabled = st.checkbox("GLCM", value=True)
 
     with col_feat2:
-        gldm_enabled = st.checkbox("GLDM 特征", value=True)
-        glrlm_enabled = st.checkbox("GLRLM 特征", value=True)
-        glszm_enabled = st.checkbox("GLSZM 特征", value=True)
+        gldm_enabled = st.checkbox("GLDM", value=True)
+        glrlm_enabled = st.checkbox("GLRLM", value=True)
+        glszm_enabled = st.checkbox("GLSZM", value=True)
 
     with col_feat3:
-        ngtdm_enabled = st.checkbox("NGTDM 特征", value=True)
+        ngtdm_enabled = st.checkbox("NGTDM", value=True)
 
     # Build feature classes dict
     feature_classes = {
@@ -552,13 +649,14 @@ def advanced_mode():
     }
 
     enabled_feature_count = sum(1 for v in feature_classes.values() if v)
-    st.caption(f"已启用 {enabled_feature_count} 个特征类别")
+    st.caption(f"{enabled_feature_count} feature classes enabled")
 
     # Visualization verification step
     image_for_viz = st.session_state.adv_preprocessed_image or st.session_state.adv_dicom_image
     if dicom_loaded and roi_loaded and image_for_viz is not None and st.session_state.adv_rois is not None:
-        st.markdown("---")
-        st.subheader("步骤 6：可视化验证 ROI 位置")
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown("#### 4. Verify ROI Placement")
 
         visualizer = ROIVisualizer(image_for_viz)
         rois = st.session_state.adv_rois
@@ -567,40 +665,53 @@ def advanced_mode():
 
         col1, col2 = st.columns([1, 3])
         with col1:
-            st.markdown("**选择要显示的 ROI**")
+            st.markdown("**Select ROIs to display**")
             selected_rois = st.multiselect(
-                "ROI 列表",
+                "ROI list",
                 roi_names,
                 default=roi_names,
                 key='adv_selected_rois'
             )
 
-            num_slices = visualizer.image_array.shape[0]
+            num_slices = visualizer.num_slices
             slice_index = st.slider(
-                "切片索引",
+                "Slice index",
                 min_value=0,
                 max_value=num_slices - 1,
                 value=num_slices // 2,
                 key='adv_slice_slider'
             )
 
+            st.markdown("**Window / Level**")
+            adv_preset = st.selectbox("Preset", ["Soft Tissue", "Lung", "Bone", "Brain", "Custom"], key='adv_wl_preset')
+            adv_presets = {"Soft Tissue": (40, 400), "Lung": (-600, 1500), "Bone": (400, 1800), "Brain": (40, 80)}
+            if adv_preset != "Custom":
+                adv_wc, adv_ww = adv_presets[adv_preset]
+            else:
+                adv_wc = st.number_input("Level", value=40, step=10, key='adv_wc_val')
+                adv_ww = st.number_input("Width", value=400, step=50, key='adv_ww_val')
+
         with col2:
             fig = visualizer.create_viewer_with_rois(
                 rois=rois,
                 selected_rois=selected_rois,
-                slice_index=slice_index
+                slice_index=slice_index,
+                window_center=adv_wc,
+                window_width=adv_ww
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.pyplot(fig)
 
         st.markdown("---")
-        st.markdown("**确认无误后继续**")
-        if st.button("✅ 确认无误，继续提取特征"):
+        st.markdown("**Once verified, proceed to extraction**")
+        if st.button("Confirm and Extract Features"):
             st.session_state.adv_verification_complete = True
-            st.success("验证完成！可以继续特征提取")
+            st.success("Verification complete — ready for feature extraction")
 
     # Feature extraction
     if st.session_state.adv_verification_complete:
-        st.subheader("步骤 7：提取特征")
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.markdown("#### 5. Extract Features")
 
         if st.session_state.adv_feature_extractor is None:
             st.session_state.adv_feature_extractor = RadiomicsFeatureExtractor()
@@ -609,14 +720,14 @@ def advanced_mode():
         handler = st.session_state.adv_roi_handler
         roi_names = handler.get_roi_names(rois)
         selected_rois = st.multiselect(
-            "选择要提特征的 ROI",
+            "Select ROIs for feature extraction",
             roi_names,
             default=roi_names[:1],
             key='adv_feature_rois'
         )
 
-        if st.button("🚀 提取特征"):
-            with st.spinner("正在提取特征..."):
+        if st.button("Extract Features"):
+            with st.spinner("Extracting features..."):
                 try:
                     feature_extractor = st.session_state.adv_feature_extractor
                     sitk_image = st.session_state.adv_preprocessed_image or st.session_state.adv_dicom_image
@@ -624,9 +735,8 @@ def advanced_mode():
                     masks_dict = {}
                     for roi in rois:
                         if roi.name in selected_rois:
-                            with st.spinner(f"正在处理 ROI: {roi.name}"):
-                                mask = feature_extractor.convert_roi_to_mask(roi, None, sitk_image)
-                                masks_dict[roi.name] = mask
+                            mask = feature_extractor.convert_roi_to_mask(roi, None, sitk_image)
+                            masks_dict[roi.name] = mask
 
                     if masks_dict:
                         df_features = feature_extractor.extract_features_for_rois(
@@ -637,109 +747,116 @@ def advanced_mode():
                         )
 
                         if not df_features.empty:
-                            st.success(f"特征提取完成！共提取了 {len(df_features)} 个 ROI 的特征")
-
-                            st.subheader("特征矩阵")
-                            st.dataframe(df_features, use_container_width=True)
-
-                            exporter = ResultsExporter()
-
-                            csv = exporter.to_csv(df_features)
-                            st.download_button(
-                                label="📥 下载特征矩阵 (CSV)",
-                                data=csv,
-                                file_name="radiomics_features_advanced.csv",
-                                mime="text/csv"
-                            )
-
-                            metadata = {
-                                '影像尺寸': f"{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]}",
-                                '体素间距': f"{sitk_image.GetSpacing()[0]:.2f}x{sitk_image.GetSpacing()[1]:.2f}x{sitk_image.GetSpacing()[2]:.2f} mm",
-                                'ROI数量': len(masks_dict),
-                                '特征总数': len(df_features.columns) - 1,
-                                '预处理': '是' if st.session_state.adv_preprocessed_image is not None else '否'
+                            st.session_state.adv_features_df = df_features
+                            st.session_state.adv_features_metadata = {
+                                'Image size': f"{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]}",
+                                'Voxel spacing': f"{sitk_image.GetSpacing()[0]:.2f}x{sitk_image.GetSpacing()[1]:.2f}x{sitk_image.GetSpacing()[2]:.2f} mm",
+                                'ROI count': len(masks_dict),
+                                'Total features': len(df_features.columns) - 1,
+                                'Preprocessing': 'Yes' if st.session_state.adv_preprocessed_image is not None else 'No'
                             }
-                            excel_bytes = exporter.to_excel(df_features, metadata=metadata)
-                            st.download_button(
-                                label="📥 下载特征矩阵 (Excel)",
-                                data=excel_bytes,
-                                file_name="radiomics_features_advanced.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-
-                            st.subheader("特征统计摘要")
-                            summary_stats = exporter.get_summary_stats(df_features)
-                            st.dataframe(summary_stats, use_container_width=True)
-
-                            # Visualization Report Tab
-                            st.markdown("---")
-                            st.subheader("可视化报告")
-
-                            report_gen = ReportGenerator()
-
-                            viz_tab1, viz_tab2, viz_tab3, viz_tab4 = st.tabs([
-                                "相关性热力图",
-                                "特征分布",
-                                "箱线图",
-                                "统计摘要"
-                            ])
-
-                            with viz_tab1:
-                                st.markdown("**特征相关性热力图**")
-                                try:
-                                    corr_fig = report_gen.create_correlation_heatmap(df_features)
-                                    st.plotly_chart(corr_fig, use_container_width=True)
-                                except Exception as e:
-                                    st.warning(f"无法生成相关性热力图: {e}")
-
-                            with viz_tab2:
-                                st.markdown("**特征分布直方图**")
-                                numeric_cols = df_features.select_dtypes(include='number').columns.tolist()
-                                if numeric_cols:
-                                    selected_feature = st.selectbox(
-                                        "选择要查看的特征",
-                                        numeric_cols,
-                                        key='feature_dist_select'
-                                    )
-                                    try:
-                                        dist_fig = report_gen.create_feature_distribution(df_features, selected_feature)
-                                        st.plotly_chart(dist_fig, use_container_width=True)
-                                    except Exception as e:
-                                        st.warning(f"无法生成分布图: {e}")
-                                else:
-                                    st.info("没有数值型特征可供显示")
-
-                            with viz_tab3:
-                                st.markdown("**ROI 对比箱线图**")
-                                numeric_cols_box = df_features.select_dtypes(include='number').columns.tolist()
-                                if numeric_cols_box:
-                                    selected_feature_box = st.selectbox(
-                                        "选择要比较的特征",
-                                        numeric_cols_box,
-                                        key='box_plot_select'
-                                    )
-                                    try:
-                                        box_fig = report_gen.create_box_plot(df_features, selected_feature_box)
-                                        st.plotly_chart(box_fig, use_container_width=True)
-                                    except Exception as e:
-                                        st.warning(f"无法生成箱线图: {e}")
-                                else:
-                                    st.info("没有数值型特征可供显示")
-
-                            with viz_tab4:
-                                st.markdown("**详细统计摘要**")
-                                try:
-                                    detailed_summary = report_gen.create_summary_table(df_features)
-                                    st.dataframe(detailed_summary, use_container_width=True)
-                                except Exception as e:
-                                    st.warning(f"无法生成统计摘要: {e}")
-
+                            st.success(f"Feature extraction complete — {len(df_features)} ROI feature rows")
+                            st.rerun()
                         else:
-                            st.warning("未能提取到任何特征")
+                            st.warning("No features could be extracted")
 
                 except Exception as e:
-                    st.error(f"特征提取失败: {e}")
+                    st.error(f"Feature extraction failed: {e}")
                     st.exception(e)
+
+    if st.session_state.adv_features_df is not None:
+        df_features = st.session_state.adv_features_df
+        metadata = st.session_state.get('adv_features_metadata', {})
+
+        st.subheader("Feature Matrix")
+        st.dataframe(df_features, use_container_width=True)
+
+        exporter = ResultsExporter()
+
+        csv = exporter.to_csv(df_features)
+        st.download_button(
+            label="Download Feature Matrix (CSV)",
+            data=csv,
+            file_name="radiomics_features_advanced.csv",
+            mime="text/csv"
+        )
+
+        excel_bytes = exporter.to_excel(df_features, metadata=metadata)
+        st.download_button(
+            label="Download Feature Matrix (Excel)",
+            data=excel_bytes,
+            file_name="radiomics_features_advanced.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        st.subheader("Feature Summary Statistics")
+        summary_stats = exporter.get_summary_stats(df_features)
+        st.dataframe(summary_stats, use_container_width=True)
+
+        # Visualization Report Tabs
+        st.markdown("---")
+        st.subheader("Visualization Report")
+
+        report_gen = ReportGenerator()
+
+        viz_tab1, viz_tab2, viz_tab3, viz_tab4 = st.tabs([
+            "Correlation Heatmap",
+            "Feature Distribution",
+            "Box Plot",
+            "Summary Statistics"
+        ])
+
+        with viz_tab1:
+            st.markdown("**Feature Correlation Heatmap**")
+            try:
+                corr_fig = report_gen.create_correlation_heatmap(df_features)
+                st.plotly_chart(corr_fig, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Could not generate correlation heatmap: {e}")
+
+        with viz_tab2:
+            st.markdown("**Feature Distribution Histogram**")
+            numeric_cols = df_features.select_dtypes(include='number').columns.tolist()
+            if numeric_cols:
+                selected_feature = st.selectbox(
+                    "Select feature",
+                    numeric_cols,
+                    key='feature_dist_select'
+                )
+                try:
+                    dist_fig = report_gen.create_feature_distribution(df_features, selected_feature)
+                    st.plotly_chart(dist_fig, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Could not generate distribution plot: {e}")
+            else:
+                st.info("No numeric features available to display")
+
+        with viz_tab3:
+            st.markdown("**ROI Comparison Box Plot**")
+            numeric_cols_box = df_features.select_dtypes(include='number').columns.tolist()
+            if numeric_cols_box:
+                selected_feature_box = st.selectbox(
+                    "Select feature",
+                    numeric_cols_box,
+                    key='box_plot_select'
+                )
+                try:
+                    box_fig = report_gen.create_box_plot(df_features, selected_feature_box)
+                    st.plotly_chart(box_fig, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Could not generate box plot: {e}")
+            else:
+                st.info("No numeric features available to display")
+
+        with viz_tab4:
+            st.markdown("**Detailed Summary Statistics**")
+            try:
+                detailed_summary = report_gen.create_summary_table(df_features)
+                st.dataframe(detailed_summary, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Could not generate summary statistics: {e}")
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
