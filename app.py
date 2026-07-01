@@ -56,9 +56,29 @@ def beginner_mode():
         st.session_state.feature_extractor = None
 
     st.subheader("步骤 1：选择数据文件夹")
-    st.markdown("请输入包含所有 DICOM 文件（影像 + RTSTRUCT）的文件夹路径")
+    st.markdown("点击按钮选择包含所有 DICOM 文件（影像 + RTSTRUCT）的文件夹")
 
-    dicom_folder = st.text_input("文件夹路径", placeholder="/path/to/your/data/folder", key='dicom_folder_input')
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("📂 选择文件夹", key='pick_folder_btn'):
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()  # 隐藏主窗口
+            root.attributes('-topmost', True)  # 置顶
+            folder_path = filedialog.askdirectory(title="选择 DICOM 数据文件夹")
+            root.destroy()
+            if folder_path:
+                st.session_state.dicom_folder = folder_path
+
+    with col1:
+        dicom_folder = st.text_input(
+            "文件夹路径（也可手动输入）",
+            value=st.session_state.get('dicom_folder', ''),
+            key='dicom_folder_input'
+        )
+        if dicom_folder:
+            st.session_state.dicom_folder = dicom_folder
 
     dicom_loaded = False
     roi_loaded = False
@@ -300,66 +320,50 @@ def advanced_mode():
             'ngtdm': True
         }
 
-    st.subheader("步骤 1：上传 DICOM 影像")
+    st.subheader("步骤 1：选择数据文件夹")
 
-    upload_method = st.radio("选择上传方式", ["选择文件夹路径（本地部署）", "上传多个文件"], horizontal=True, key='adv_upload_method')
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("📂 选择文件夹", key='adv_pick_folder_btn'):
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            folder_path = filedialog.askdirectory(title="选择 DICOM 数据文件夹")
+            root.destroy()
+            if folder_path:
+                st.session_state.adv_dicom_folder = folder_path
+
+    with col1:
+        dicom_folder = st.text_input(
+            "文件夹路径（也可手动输入）",
+            value=st.session_state.get('adv_dicom_folder', ''),
+            key='adv_dicom_folder_input'
+        )
+        if dicom_folder:
+            st.session_state.adv_dicom_folder = dicom_folder
 
     dicom_loaded = False
 
-    if upload_method == "选择文件夹路径（本地部署）":
-        dicom_folder = st.text_input("输入 DICOM 文件夹路径", placeholder="/path/to/dicom/folder", key='adv_dicom_folder')
+    if dicom_folder and Path(dicom_folder).exists():
+        folder_path = Path(dicom_folder)
 
-        if dicom_folder and Path(dicom_folder).exists():
-            folder_path = Path(dicom_folder)
+        try:
+            reader = sitk.ImageSeriesReader()
+            dicom_names = reader.GetGDCMSeriesFileNames(str(folder_path))
 
-            try:
-                reader = sitk.ImageSeriesReader()
-                dicom_names = reader.GetGDCMSeriesFileNames(str(folder_path))
+            if dicom_names:
+                reader.SetFileNames(dicom_names)
+                sitk_image = reader.Execute()
 
-                if dicom_names:
-                    reader.SetFileNames(dicom_names)
-                    sitk_image = reader.Execute()
-
-                    st.session_state.adv_dicom_image = sitk_image
-                    dicom_loaded = True
-                    st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
-                else:
-                    st.error("未找到有效的 DICOM 序列")
-            except Exception as e:
-                st.error(f"加载 DICOM 失败: {e}")
-
-    else:
-        dicom_upload = st.file_uploader(
-            "上传 DICOM 文件（可选中多个）",
-            type=['dcm', 'dicom'],
-            accept_multiple_files=True,
-            key='adv_dicom_uploader'
-        )
-
-        if dicom_upload:
-            st.success(f"已上传 {len(dicom_upload)} 个 DICOM 文件")
-
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
-                for i, uploaded_file in enumerate(dicom_upload):
-                    dicom_file = temp_path / f"dicom_{i}.dcm"
-                    dicom_file.write_bytes(uploaded_file.getvalue())
-
-                try:
-                    reader = sitk.ImageSeriesReader()
-                    dicom_names = reader.GetGDCMSeriesFileNames(str(temp_path))
-
-                    if dicom_names:
-                        reader.SetFileNames(dicom_names)
-                        sitk_image = reader.Execute()
-
-                        st.session_state.adv_dicom_image = sitk_image
-                        dicom_loaded = True
-                        st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
-                    else:
-                        st.error("未找到有效的 DICOM 序列")
-                except Exception as e:
-                    st.error(f"加载 DICOM 失败: {e}")
+                st.session_state.adv_dicom_image = sitk_image
+                dicom_loaded = True
+                st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
+            else:
+                st.error("未找到有效的 DICOM 序列")
+        except Exception as e:
+            st.error(f"加载 DICOM 失败: {e}")
 
     st.subheader("步骤 2：上传 ROI 文件")
     roi_upload = st.file_uploader(
