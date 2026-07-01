@@ -61,15 +61,14 @@ def beginner_mode():
     col1, col2 = st.columns([3, 1])
     with col2:
         if st.button("📂 选择文件夹", key='pick_folder_btn'):
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()  # 隐藏主窗口
-            root.attributes('-topmost', True)  # 置顶
-            folder_path = filedialog.askdirectory(title="选择 DICOM 数据文件夹")
-            root.destroy()
-            if folder_path:
-                st.session_state.dicom_folder = folder_path
+            import subprocess
+            result = subprocess.run([
+                'osascript', '-e',
+                'set folderPath to POSIX path of (choose folder with prompt "选择 DICOM 数据文件夹")'
+            ], capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                st.session_state.dicom_folder = result.stdout.strip()
+                st.rerun()
 
     with col1:
         dicom_folder = st.text_input(
@@ -325,15 +324,14 @@ def advanced_mode():
     col1, col2 = st.columns([3, 1])
     with col2:
         if st.button("📂 选择文件夹", key='adv_pick_folder_btn'):
-            import tkinter as tk
-            from tkinter import filedialog
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)
-            folder_path = filedialog.askdirectory(title="选择 DICOM 数据文件夹")
-            root.destroy()
-            if folder_path:
-                st.session_state.adv_dicom_folder = folder_path
+            import subprocess
+            result = subprocess.run([
+                'osascript', '-e',
+                'set folderPath to POSIX path of (choose folder with prompt "选择 DICOM 数据文件夹")'
+            ], capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                st.session_state.adv_dicom_folder = result.stdout.strip()
+                st.rerun()
 
     with col1:
         dicom_folder = st.text_input(
