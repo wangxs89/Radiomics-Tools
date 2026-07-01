@@ -50,17 +50,41 @@ class ROIVisualizer:
         return None
 
     def create_viewer_with_rois(self, rois: List[ROI], selected_rois: List[str] = None,
-                                slice_index: int = 0) -> go.Figure:
-        """创建带 ROI 叠加的影像查看器"""
+                                slice_index: int = 0, window_center: float = None,
+                                window_width: float = None) -> go.Figure:
+        """创建带 ROI 叠加的影像查看器
+
+        Args:
+            rois: ROI 列表
+            selected_rois: 要显示的 ROI 名称列表
+            slice_index: 切片索引
+            window_center: 窗位（默认 40，软组织窗）
+            window_width: 窗宽（默认 400，软组织窗）
+        """
         fig = go.Figure()
+
+        slice_data = self.image_array[slice_index]
+
+        # CT 窗宽窗位设置
+        if window_center is None:
+            window_center = 40  # 软组织窗位
+        if window_width is None:
+            window_width = 400  # 软组织窗宽
+
+        zmin = window_center - window_width / 2
+        zmax = window_center + window_width / 2
 
         # 显示影像切片
         fig.add_trace(
             go.Heatmap(
-                z=self.image_array[slice_index],
+                z=slice_data,
+                zmin=zmin,
+                zmax=zmax,
                 colorscale='gray',
                 showscale=False,
-                hoverinfo='skip'
+                hoverinfo='skip',
+                xgap=1,
+                ygap=1
             )
         )
 
