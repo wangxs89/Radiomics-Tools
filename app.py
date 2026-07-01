@@ -39,7 +39,7 @@ def main():
 def beginner_mode():
     """初级模式：一键提取"""
     st.header("🟢 初级模式")
-    st.markdown("简单三步，快速提取影像组学特征")
+    st.markdown("简单三步：选择文件夹 → 可视化验证 → 提取特征")
 
     # Session state for storing parsed data
     if 'dicom_image' not in st.session_state:
@@ -55,104 +55,93 @@ def beginner_mode():
     if 'feature_extractor' not in st.session_state:
         st.session_state.feature_extractor = None
 
-    st.subheader("步骤 1：上传 DICOM 影像")
+    st.subheader("步骤 1：选择数据文件夹")
+    st.markdown("请输入包含所有 DICOM 文件（影像 + RTSTRUCT）的文件夹路径")
 
-    upload_method = st.radio("选择上传方式", ["选择文件夹路径（本地部署）", "上传多个文件"], horizontal=True)
+    dicom_folder = st.text_input("文件夹路径", placeholder="/path/to/your/data/folder", key='dicom_folder_input')
 
     dicom_loaded = False
-
-    if upload_method == "选择文件夹路径（本地部署）":
-        dicom_folder = st.text_input("输入 DICOM 文件夹路径", placeholder="/path/to/dicom/folder")
-
-        if dicom_folder and Path(dicom_folder).exists():
-            folder_path = Path(dicom_folder)
-            dicom_files = list(folder_path.glob("*.dcm")) + list(folder_path.glob("*.DCM")) + \
-                         list(folder_path.glob("*.dicom")) + [f for f in folder_path.iterdir() if f.is_file()]
-
-            if dicom_files:
-                st.success(f"找到 {len(dicom_files)} 个文件")
-
-                try:
-                    # 使用 SimpleITK 直接读取 DICOM 序列
-                    reader = sitk.ImageSeriesReader()
-                    dicom_names = reader.GetGDCMSeriesFileNames(str(folder_path))
-
-                    if dicom_names:
-                        reader.SetFileNames(dicom_names)
-                        sitk_image = reader.Execute()
-
-                        st.session_state.dicom_image = sitk_image
-                        dicom_loaded = True
-                        st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
-                    else:
-                        st.error("未找到有效的 DICOM 序列")
-                except Exception as e:
-                    st.error(f"加载 DICOM 失败: {e}")
-
-    else:
-        dicom_upload = st.file_uploader(
-            "上传 DICOM 文件（可选中多个）",
-            type=['dcm', 'dicom'],
-            accept_multiple_files=True,
-            key='dicom_uploader'
-        )
-
-        if dicom_upload:
-            st.success(f"已上传 {len(dicom_upload)} 个 DICOM 文件")
-
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
-                for i, uploaded_file in enumerate(dicom_upload):
-                    dicom_file = temp_path / f"dicom_{i}.dcm"
-                    dicom_file.write_bytes(uploaded_file.getvalue())
-
-                try:
-                    # 使用 SimpleITK 读取 DICOM 序列
-                    reader = sitk.ImageSeriesReader()
-                    dicom_names = reader.GetGDCMSeriesFileNames(str(temp_path))
-
-                    if dicom_names:
-                        reader.SetFileNames(dicom_names)
-                        sitk_image = reader.Execute()
-
-                        st.session_state.dicom_image = sitk_image
-                        dicom_loaded = True
-                        st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
-                    else:
-                        st.error("未找到有效的 DICOM 序列")
-                except Exception as e:
-                    st.error(f"加载 DICOM 失败: {e}")
-
-    st.subheader("步骤 2：上传 ROI 文件")
-    roi_upload = st.file_uploader(
-        "上传 RTSTRUCT 文件",
-        type=['dcm'],
-        accept_multiple_files=False,
-        key='roi_uploader'
-    )
-
     roi_loaded = False
-    if roi_upload:
-        st.success("已上传 RTSTRUCT 文件")
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            roi_file = temp_path / "rtstruct.dcm"
-            roi_file.write_bytes(roi_upload.getvalue())
+    if dicom_folder and Path(dicom_folder).exists():
+        folder_path = Path(dicom_folder)
 
-            handler = ROIHandler()
-            rois = handler.load_rtstruct(str(roi_file))
+        # 扫描文件夹内容
+        all_files = [f for f in folder_path.iterdir() if f.is_file()]
+        st.info(f"文件夹中找到 {len(all_files)} 个文件")
 
-            if rois:
-                st.session_state.rois = rois
-                st.session_state.roi_handler = handler
-                roi_loaded = True
-                st.success(f"ROI 加载成功，共 {len(rois)} 个 ROI")
+        # 1. 加载 DICOM 影像序列
+        try:
+            reader = sitk.ImageSeriesReader()
+            series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(str(folder_path))
+
+            if series_ids:
+                # 显示找到的序列
+                st.markdown("**找到的 DICOM 序列：**")
+                for sid in series_ids:
+                    file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(folder_path), sid)
+                    st.write(f"- 序列 {sid[-8:]}：{len(file_names)} 个切片")
+
+                # 读取第一个序列
+                dicom_names = reader.GetGDCMSeriesFileNames(str(folder_path), series_ids[0])
+                reader.SetFileNames(dicom_names)
+                sitk_image = reader.Execute()
+
+                st.session_state.dicom_image = sitk_image
+                dicom_loaded = True
+                st.success(f"✅ DICOM 影像加载成功：{sitk_image.GetSize()[0]}×{sitk_image.GetSize()[1]}×{sitk_image.GetSize()[2]} 体素")
+            else:
+                st.warning("未找到 DICOM 影像序列")
+        except Exception as e:
+            st.error(f"加载 DICOM 影像失败: {e}")
+
+        # 2. 自动查找 RTSTRUCT 文件
+        try:
+            rtstruct_files = []
+            for f in all_files:
+                try:
+                    import pydicom
+                    ds = pydicom.dcmread(str(f), stop_before_pixels=True)
+                    if getattr(ds, 'Modality', '') == 'RTSTRUCT':
+                        rtstruct_files.append(f)
+                except Exception:
+                    continue
+
+            if rtstruct_files:
+                st.markdown("**找到的 RTSTRUCT 文件：**")
+                for rf in rtstruct_files:
+                    st.write(f"- `{rf.name}`")
+
+                # 加载第一个 RTSTRUCT
+                handler = ROIHandler()
+                rois = handler.load_rtstruct(str(rtstruct_files[0]))
+
+                if rois:
+                    st.session_state.rois = rois
+                    st.session_state.roi_handler = handler
+                    roi_loaded = True
+                    roi_names = handler.get_roi_names(rois)
+                    st.success(f"✅ RTSTRUCT 加载成功：{len(rois)} 个 ROI（{', '.join(roi_names)}）")
+            else:
+                st.warning("未找到 RTSTRUCT 文件")
+        except Exception as e:
+            st.error(f"加载 RTSTRUCT 失败: {e}")
+
+        # 3. 查找 NIfTI 掩模文件
+        nii_files = list(folder_path.glob("*.nii")) + list(folder_path.glob("*.nii.gz"))
+        if nii_files and not roi_loaded:
+            st.markdown("**找到的 NIfTI 掩模文件：**")
+            for nf in nii_files:
+                st.write(f"- `{nf.name}`")
+            st.info("NIfTI 掩模支持即将上线")
+
+    elif dicom_folder:
+        st.error(f"文件夹不存在: {dicom_folder}")
 
     # Visualization verification step
     if dicom_loaded and roi_loaded and st.session_state.dicom_image is not None and st.session_state.rois is not None:
         st.markdown("---")
-        st.subheader("步骤 3：可视化验证 ROI 位置")
+        st.subheader("步骤 2：可视化验证 ROI 位置")
 
         visualizer = ROIVisualizer(st.session_state.dicom_image)
         rois = st.session_state.rois
@@ -195,7 +184,7 @@ def beginner_mode():
 
     # Show feature extraction if verification is complete
     if st.session_state.verification_complete:
-        st.subheader("步骤 4：提取特征")
+        st.subheader("步骤 3：提取特征")
 
         # Initialize feature extractor
         if st.session_state.feature_extractor is None:
