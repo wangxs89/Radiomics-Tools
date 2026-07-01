@@ -106,6 +106,20 @@ def beginner_mode():
                 reader.SetFileNames(dicom_names)
                 sitk_image = reader.Execute()
 
+                # 应用 RescaleSlope 和 RescaleIntercept 转换为 HU 值
+                import pydicom
+                first_ds = pydicom.dcmread(str(dicom_names[0]), stop_before_pixels=True)
+                slope = float(getattr(first_ds, 'RescaleSlope', 1.0))
+                intercept = float(getattr(first_ds, 'RescaleIntercept', 0.0))
+
+                if slope != 1.0 or intercept != 0.0:
+                    sitk_image = sitk.Cast(sitk_image, sitk.sitkFloat32)
+                    sitk_image = sitk_image * slope + intercept
+
+                # 显示数据范围
+                arr = sitk.GetArrayFromImage(sitk_image)
+                st.write(f"**影像数据范围：** {arr.min():.0f} ~ {arr.max():.0f} HU")
+
                 st.session_state.dicom_image = sitk_image
                 dicom_loaded = True
                 st.success(f"✅ DICOM 影像加载成功：{sitk_image.GetSize()[0]}×{sitk_image.GetSize()[1]}×{sitk_image.GetSize()[2]} 体素")
@@ -357,6 +371,16 @@ def advanced_mode():
             if dicom_names:
                 reader.SetFileNames(dicom_names)
                 sitk_image = reader.Execute()
+
+                # 应用 RescaleSlope 和 RescaleIntercept 转换为 HU 值
+                import pydicom
+                first_ds = pydicom.dcmread(str(dicom_names[0]), stop_before_pixels=True)
+                slope = float(getattr(first_ds, 'RescaleSlope', 1.0))
+                intercept = float(getattr(first_ds, 'RescaleIntercept', 0.0))
+
+                if slope != 1.0 or intercept != 0.0:
+                    sitk_image = sitk.Cast(sitk_image, sitk.sitkFloat32)
+                    sitk_image = sitk_image * slope + intercept
 
                 st.session_state.adv_dicom_image = sitk_image
                 dicom_loaded = True
