@@ -56,51 +56,72 @@ def beginner_mode():
         st.session_state.feature_extractor = None
 
     st.subheader("步骤 1：上传 DICOM 影像")
-    dicom_upload = st.file_uploader(
-        "上传 DICOM 文件",
-        type=['dcm', 'dicom'],
-        accept_multiple_files=True,
-        key='dicom_uploader'
-    )
+
+    upload_method = st.radio("选择上传方式", ["选择文件夹路径（本地部署）", "上传多个文件"], horizontal=True)
 
     dicom_loaded = False
-    if dicom_upload:
-        st.success(f"已上传 {len(dicom_upload)} 个 DICOM 文件")
 
-        # Load DICOM series
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            for i, uploaded_file in enumerate(dicom_upload):
-                dicom_file = temp_path / f"dicom_{i}.dcm"
-                dicom_file.write_bytes(uploaded_file.getvalue())
+    if upload_method == "选择文件夹路径（本地部署）":
+        dicom_folder = st.text_input("输入 DICOM 文件夹路径", placeholder="/path/to/dicom/folder")
 
-            parser = DICOMParser()
-            series = parser.load_series(str(temp_path))
+        if dicom_folder and Path(dicom_folder).exists():
+            folder_path = Path(dicom_folder)
+            dicom_files = list(folder_path.glob("*.dcm")) + list(folder_path.glob("*.DCM")) + \
+                         list(folder_path.glob("*.dicom")) + [f for f in folder_path.iterdir() if f.is_file()]
 
-            if series and series.instances:
-                # Store the DICOM series for later use
-                st.session_state.dicom_series = series
+            if dicom_files:
+                st.success(f"找到 {len(dicom_files)} 个文件")
 
-                # Convert first instance to SimpleITK image for visualization
-                first_instance = series.instances[0]
-                ds = first_instance.dataset
-                pixel_array = ds.pixel_array.astype(float)
+                try:
+                    # 使用 SimpleITK 直接读取 DICOM 序列
+                    reader = sitk.ImageSeriesReader()
+                    dicom_names = reader.GetGDCMSeriesFileNames(str(folder_path))
 
-                # Apply rescale slope and intercept if present
-                slope = getattr(ds, 'RescaleSlope', 1)
-                intercept = getattr(ds, 'Intercept', 0)
-                pixel_array = pixel_array * slope + intercept
+                    if dicom_names:
+                        reader.SetFileNames(dicom_names)
+                        sitk_image = reader.Execute()
 
-                # Create SimpleITK image
-                sitk_image = sitk.GetImageFromArray(pixel_array)
-                spacing = getattr(ds, 'PixelSpacing', [1.0, 1.0])
-                if len(spacing) >= 2:
-                    sitk_image.SetSpacing([float(spacing[0]), float(spacing[1])])
-                sitk_image.SetOrigin([0.0, 0.0])
+                        st.session_state.dicom_image = sitk_image
+                        dicom_loaded = True
+                        st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
+                    else:
+                        st.error("未找到有效的 DICOM 序列")
+                except Exception as e:
+                    st.error(f"加载 DICOM 失败: {e}")
 
-                st.session_state.dicom_image = sitk_image
-                dicom_loaded = True
-                st.success("DICOM 影像加载成功")
+    else:
+        dicom_upload = st.file_uploader(
+            "上传 DICOM 文件（可选中多个）",
+            type=['dcm', 'dicom'],
+            accept_multiple_files=True,
+            key='dicom_uploader'
+        )
+
+        if dicom_upload:
+            st.success(f"已上传 {len(dicom_upload)} 个 DICOM 文件")
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                for i, uploaded_file in enumerate(dicom_upload):
+                    dicom_file = temp_path / f"dicom_{i}.dcm"
+                    dicom_file.write_bytes(uploaded_file.getvalue())
+
+                try:
+                    # 使用 SimpleITK 读取 DICOM 序列
+                    reader = sitk.ImageSeriesReader()
+                    dicom_names = reader.GetGDCMSeriesFileNames(str(temp_path))
+
+                    if dicom_names:
+                        reader.SetFileNames(dicom_names)
+                        sitk_image = reader.Execute()
+
+                        st.session_state.dicom_image = sitk_image
+                        dicom_loaded = True
+                        st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
+                    else:
+                        st.error("未找到有效的 DICOM 序列")
+                except Exception as e:
+                    st.error(f"加载 DICOM 失败: {e}")
 
     st.subheader("步骤 2：上传 ROI 文件")
     roi_upload = st.file_uploader(
@@ -194,21 +215,17 @@ def beginner_mode():
                 try:
                     # Get the feature extractor
                     feature_extractor = st.session_state.feature_extractor
-                    dicom_series = st.session_state.dicom_series
                     dicom_image = st.session_state.dicom_image
 
-                    # Convert DICOM series to SimpleITK image using the feature extractor
-                    if dicom_series is not None:
-                        sitk_image = feature_extractor.convert_dicom_series_to_sitk(dicom_series)
-                    else:
-                        sitk_image = dicom_image
+                    # sitk_image is already a proper 3D volume from SimpleITK
+                    sitk_image = dicom_image
 
                     # Process selected ROIs
                     masks_dict = {}
                     for roi in rois:
                         if roi.name in selected_rois:
                             with st.spinner(f"正在处理 ROI: {roi.name}"):
-                                mask = feature_extractor.convert_roi_to_mask(roi, dicom_series, sitk_image)
+                                mask = feature_extractor.convert_roi_to_mask(roi, None, sitk_image)
                                 masks_dict[roi.name] = mask
 
                     # Extract features for all ROIs
@@ -236,8 +253,8 @@ def beginner_mode():
 
                             # Excel download with metadata
                             metadata = {
-                                '影像名称': getattr(dicom_series, 'series_description', ''),
-                                '患者ID': getattr(dicom_series.instances[0].dataset, 'PatientID', '') if dicom_series.instances else '',
+                                '影像尺寸': f"{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]}",
+                                '体素间距': f"{sitk_image.GetSpacing()[0]:.2f}x{sitk_image.GetSpacing()[1]:.2f}x{sitk_image.GetSpacing()[2]:.2f} mm",
                                 'ROI数量': len(masks_dict),
                                 '特征总数': len(df_features.columns) - 1  # excluding ROI column
                             }
@@ -295,46 +312,65 @@ def advanced_mode():
         }
 
     st.subheader("步骤 1：上传 DICOM 影像")
-    dicom_upload = st.file_uploader(
-        "上传 DICOM 文件",
-        type=['dcm', 'dicom'],
-        accept_multiple_files=True,
-        key='adv_dicom_uploader'
-    )
+
+    upload_method = st.radio("选择上传方式", ["选择文件夹路径（本地部署）", "上传多个文件"], horizontal=True, key='adv_upload_method')
 
     dicom_loaded = False
-    if dicom_upload:
-        st.success(f"已上传 {len(dicom_upload)} 个 DICOM 文件")
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            for i, uploaded_file in enumerate(dicom_upload):
-                dicom_file = temp_path / f"dicom_{i}.dcm"
-                dicom_file.write_bytes(uploaded_file.getvalue())
+    if upload_method == "选择文件夹路径（本地部署）":
+        dicom_folder = st.text_input("输入 DICOM 文件夹路径", placeholder="/path/to/dicom/folder", key='adv_dicom_folder')
 
-            parser = DICOMParser()
-            series = parser.load_series(str(temp_path))
+        if dicom_folder and Path(dicom_folder).exists():
+            folder_path = Path(dicom_folder)
 
-            if series and series.instances:
-                st.session_state.adv_dicom_series = series
+            try:
+                reader = sitk.ImageSeriesReader()
+                dicom_names = reader.GetGDCMSeriesFileNames(str(folder_path))
 
-                first_instance = series.instances[0]
-                ds = first_instance.dataset
-                pixel_array = ds.pixel_array.astype(float)
+                if dicom_names:
+                    reader.SetFileNames(dicom_names)
+                    sitk_image = reader.Execute()
 
-                slope = getattr(ds, 'RescaleSlope', 1)
-                intercept = getattr(ds, 'Intercept', 0)
-                pixel_array = pixel_array * slope + intercept
+                    st.session_state.adv_dicom_image = sitk_image
+                    dicom_loaded = True
+                    st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
+                else:
+                    st.error("未找到有效的 DICOM 序列")
+            except Exception as e:
+                st.error(f"加载 DICOM 失败: {e}")
 
-                sitk_image = sitk.GetImageFromArray(pixel_array)
-                spacing = getattr(ds, 'PixelSpacing', [1.0, 1.0])
-                if len(spacing) >= 2:
-                    sitk_image.SetSpacing([float(spacing[0]), float(spacing[1])])
-                sitk_image.SetOrigin([0.0, 0.0])
+    else:
+        dicom_upload = st.file_uploader(
+            "上传 DICOM 文件（可选中多个）",
+            type=['dcm', 'dicom'],
+            accept_multiple_files=True,
+            key='adv_dicom_uploader'
+        )
 
-                st.session_state.adv_dicom_image = sitk_image
-                dicom_loaded = True
-                st.success("DICOM 影像加载成功")
+        if dicom_upload:
+            st.success(f"已上传 {len(dicom_upload)} 个 DICOM 文件")
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                for i, uploaded_file in enumerate(dicom_upload):
+                    dicom_file = temp_path / f"dicom_{i}.dcm"
+                    dicom_file.write_bytes(uploaded_file.getvalue())
+
+                try:
+                    reader = sitk.ImageSeriesReader()
+                    dicom_names = reader.GetGDCMSeriesFileNames(str(temp_path))
+
+                    if dicom_names:
+                        reader.SetFileNames(dicom_names)
+                        sitk_image = reader.Execute()
+
+                        st.session_state.adv_dicom_image = sitk_image
+                        dicom_loaded = True
+                        st.success(f"DICOM 序列加载成功：{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]} 体素")
+                    else:
+                        st.error("未找到有效的 DICOM 序列")
+                except Exception as e:
+                    st.error(f"加载 DICOM 失败: {e}")
 
     st.subheader("步骤 2：上传 ROI 文件")
     roi_upload = st.file_uploader(
@@ -565,19 +601,13 @@ def advanced_mode():
             with st.spinner("正在提取特征..."):
                 try:
                     feature_extractor = st.session_state.adv_feature_extractor
-                    dicom_series = st.session_state.adv_dicom_series
-                    image_to_use = st.session_state.adv_preprocessed_image or st.session_state.adv_dicom_image
-
-                    if dicom_series is not None:
-                        sitk_image = feature_extractor.convert_dicom_series_to_sitk(dicom_series)
-                    else:
-                        sitk_image = image_to_use
+                    sitk_image = st.session_state.adv_preprocessed_image or st.session_state.adv_dicom_image
 
                     masks_dict = {}
                     for roi in rois:
                         if roi.name in selected_rois:
                             with st.spinner(f"正在处理 ROI: {roi.name}"):
-                                mask = feature_extractor.convert_roi_to_mask(roi, dicom_series, sitk_image)
+                                mask = feature_extractor.convert_roi_to_mask(roi, None, sitk_image)
                                 masks_dict[roi.name] = mask
 
                     if masks_dict:
@@ -605,8 +635,8 @@ def advanced_mode():
                             )
 
                             metadata = {
-                                '影像名称': getattr(dicom_series, 'series_description', ''),
-                                '患者ID': getattr(dicom_series.instances[0].dataset, 'PatientID', '') if dicom_series.instances else '',
+                                '影像尺寸': f"{sitk_image.GetSize()[0]}x{sitk_image.GetSize()[1]}x{sitk_image.GetSize()[2]}",
+                                '体素间距': f"{sitk_image.GetSpacing()[0]:.2f}x{sitk_image.GetSpacing()[1]:.2f}x{sitk_image.GetSpacing()[2]:.2f} mm",
                                 'ROI数量': len(masks_dict),
                                 '特征总数': len(df_features.columns) - 1,
                                 '预处理': '是' if st.session_state.adv_preprocessed_image is not None else '否'
