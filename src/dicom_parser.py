@@ -1,5 +1,4 @@
 """DICOM 影像解析模块"""
-import os
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import pydicom
