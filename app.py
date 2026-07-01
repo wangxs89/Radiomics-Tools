@@ -178,12 +178,15 @@ def beginner_mode():
 
             # Slice selector
             num_slices = visualizer.image_array.shape[0]
-            slice_index = st.slider(
-                "切片索引",
-                min_value=0,
-                max_value=num_slices - 1,
-                value=num_slices // 2
-            )
+            if num_slices > 1:
+                slice_index = st.slider(
+                    "切片索引",
+                    min_value=0,
+                    max_value=num_slices - 1,
+                    value=num_slices // 2
+                )
+            else:
+                slice_index = 0
 
         # Display visualization
         with col2:
