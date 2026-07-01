@@ -12,6 +12,8 @@ from src.visualization import ImageViewer
 from src.roi_visualizer import ROIVisualizer
 from src.results_exporter import ResultsExporter
 from src.image_preprocessor import ImagePreprocessor
+from src.filters import RadiomicsFilterConfig
+from src.report_generator import ReportGenerator
 
 
 st.set_page_config(
@@ -279,6 +281,18 @@ def advanced_mode():
         st.session_state.adv_feature_extractor = None
     if 'adv_preprocessed_image' not in st.session_state:
         st.session_state.adv_preprocessed_image = None
+    if 'adv_selected_filters' not in st.session_state:
+        st.session_state.adv_selected_filters = ['original']
+    if 'adv_feature_types' not in st.session_state:
+        st.session_state.adv_feature_types = {
+            'shape': True,
+            'firstorder': True,
+            'glcm': True,
+            'gldm': True,
+            'glrlm': True,
+            'glszm': True,
+            'ngtdm': True
+        }
 
     st.subheader("步骤 1：上传 DICOM 影像")
     dicom_upload = st.file_uploader(
@@ -401,11 +415,96 @@ def advanced_mode():
             st.session_state.adv_preprocessed_image = processed_image
             st.info("预处理后的图像已保存，将用于特征提取")
 
+    # Filter selection
+    st.markdown("---")
+    st.subheader("步骤 4：滤波器选择")
+
+    col_filter1, col_filter2 = st.columns(2)
+
+    with col_filter1:
+        st.markdown("**可用滤波器**")
+        filter_options = {k: v['name'] for k, v in RadiomicsFilterConfig.AVAILABLE_FILTERS.items()}
+        filter_labels = list(filter_options.values())
+        filter_keys = list(filter_options.keys())
+
+        selected_filter_labels = st.multiselect(
+            "选择滤波器",
+            filter_labels,
+            default=[filter_options['original']]
+        )
+
+        selected_filters = []
+        for label in selected_filter_labels:
+            for key, val in filter_options.items():
+                if val == label:
+                    selected_filters.append(key)
+                    break
+
+    with col_filter2:
+        st.markdown("**滤波器参数**")
+        if 'log' in selected_filters:
+            log_sigmas_input = st.text_input("LoG Sigma 值 (逗号分隔)", value="1.0,2.0,3.0")
+            log_sigmas = [float(s.strip()) for s in log_sigmas_input.split(',') if s.strip()]
+        else:
+            log_sigmas = None
+
+        if 'wavelet' in selected_filters:
+            wavelet_types = ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
+            selected_wavelet_labels = st.multiselect(
+                "小波类型",
+                wavelet_types,
+                default=['LLL', 'LLH', 'LHL', 'LHH']
+            )
+        else:
+            selected_wavelet_labels = None
+
+    # Build filter settings
+    filter_settings = RadiomicsFilterConfig.build_settings(
+        enabled_filters=selected_filters,
+        log_sigmas=log_sigmas,
+        wavelet_types=selected_wavelet_labels
+    )
+
+    st.caption(f"已配置 {len(filter_settings.get('enabledImageTypes', []))} 种影像类型")
+
+    # Feature type selection
+    st.markdown("---")
+    st.subheader("步骤 5：特征类型选择")
+
+    col_feat1, col_feat2, col_feat3 = st.columns(3)
+
+    with col_feat1:
+        shape_enabled = st.checkbox("形状特征 (Shape)", value=True)
+        firstorder_enabled = st.checkbox("一阶特征 (First Order)", value=True)
+        glcm_enabled = st.checkbox("GLCM 特征", value=True)
+
+    with col_feat2:
+        gldm_enabled = st.checkbox("GLDM 特征", value=True)
+        glrlm_enabled = st.checkbox("GLRLM 特征", value=True)
+        glszm_enabled = st.checkbox("GLSZM 特征", value=True)
+
+    with col_feat3:
+        ngtdm_enabled = st.checkbox("NGTDM 特征", value=True)
+
+    # Build feature classes dict
+    feature_classes = {
+        'shape': shape_enabled,
+        'firstorder': firstorder_enabled,
+        'glcm': glcm_enabled,
+        'gldm': gldm_enabled,
+        'glrlm': glrlm_enabled,
+        'glszm': glszm_enabled,
+        'ngtdm': ngtdm_enabled
+    }
+
+    enabled_feature_count = sum(1 for v in feature_classes.values() if v)
+    st.caption(f"已启用 {enabled_feature_count} 个特征类别")
+
     # Visualization verification step
     image_for_viz = st.session_state.adv_preprocessed_image or st.session_state.adv_dicom_image
     if dicom_loaded and roi_loaded and image_for_viz is not None and st.session_state.adv_rois is not None:
         st.markdown("---")
-        st.subheader("步骤 4：可视化验证 ROI 位置")
+        st.subheader("步骤 6：可视化验证 ROI 位置")
 
         visualizer = ROIVisualizer(image_for_viz)
         rois = st.session_state.adv_rois
@@ -447,7 +546,7 @@ def advanced_mode():
 
     # Feature extraction
     if st.session_state.adv_verification_complete:
-        st.subheader("步骤 5：提取特征")
+        st.subheader("步骤 7：提取特征")
 
         if st.session_state.adv_feature_extractor is None:
             st.session_state.adv_feature_extractor = RadiomicsFeatureExtractor()
@@ -482,7 +581,12 @@ def advanced_mode():
                                 masks_dict[roi.name] = mask
 
                     if masks_dict:
-                        df_features = feature_extractor.extract_features_for_rois(sitk_image, masks_dict)
+                        df_features = feature_extractor.extract_features_for_rois(
+                            sitk_image,
+                            masks_dict,
+                            feature_classes=feature_classes,
+                            filter_settings=filter_settings
+                        )
 
                         if not df_features.empty:
                             st.success(f"特征提取完成！共提取了 {len(df_features)} 个 ROI 的特征")
@@ -518,6 +622,69 @@ def advanced_mode():
                             st.subheader("特征统计摘要")
                             summary_stats = exporter.get_summary_stats(df_features)
                             st.dataframe(summary_stats, use_container_width=True)
+
+                            # Visualization Report Tab
+                            st.markdown("---")
+                            st.subheader("可视化报告")
+
+                            report_gen = ReportGenerator()
+
+                            viz_tab1, viz_tab2, viz_tab3, viz_tab4 = st.tabs([
+                                "相关性热力图",
+                                "特征分布",
+                                "箱线图",
+                                "统计摘要"
+                            ])
+
+                            with viz_tab1:
+                                st.markdown("**特征相关性热力图**")
+                                try:
+                                    corr_fig = report_gen.create_correlation_heatmap(df_features)
+                                    st.plotly_chart(corr_fig, use_container_width=True)
+                                except Exception as e:
+                                    st.warning(f"无法生成相关性热力图: {e}")
+
+                            with viz_tab2:
+                                st.markdown("**特征分布直方图**")
+                                numeric_cols = df_features.select_dtypes(include='number').columns.tolist()
+                                if numeric_cols:
+                                    selected_feature = st.selectbox(
+                                        "选择要查看的特征",
+                                        numeric_cols,
+                                        key='feature_dist_select'
+                                    )
+                                    try:
+                                        dist_fig = report_gen.create_feature_distribution(df_features, selected_feature)
+                                        st.plotly_chart(dist_fig, use_container_width=True)
+                                    except Exception as e:
+                                        st.warning(f"无法生成分布图: {e}")
+                                else:
+                                    st.info("没有数值型特征可供显示")
+
+                            with viz_tab3:
+                                st.markdown("**ROI 对比箱线图**")
+                                numeric_cols_box = df_features.select_dtypes(include='number').columns.tolist()
+                                if numeric_cols_box:
+                                    selected_feature_box = st.selectbox(
+                                        "选择要比较的特征",
+                                        numeric_cols_box,
+                                        key='box_plot_select'
+                                    )
+                                    try:
+                                        box_fig = report_gen.create_box_plot(df_features, selected_feature_box)
+                                        st.plotly_chart(box_fig, use_container_width=True)
+                                    except Exception as e:
+                                        st.warning(f"无法生成箱线图: {e}")
+                                else:
+                                    st.info("没有数值型特征可供显示")
+
+                            with viz_tab4:
+                                st.markdown("**详细统计摘要**")
+                                try:
+                                    detailed_summary = report_gen.create_summary_table(df_features)
+                                    st.dataframe(detailed_summary, use_container_width=True)
+                                except Exception as e:
+                                    st.warning(f"无法生成统计摘要: {e}")
 
                         else:
                             st.warning("未能提取到任何特征")

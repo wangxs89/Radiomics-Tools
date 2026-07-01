@@ -9,17 +9,42 @@ from radiomics import featureextractor
 class RadiomicsFeatureExtractor:
     """PyRadiomics 特征提取器"""
 
-    def __init__(self):
-        """初始化特征提取器"""
+    def __init__(self, feature_classes: Dict[str, bool] = None, filter_settings: Dict = None):
+        """初始化特征提取器
+
+        Args:
+            feature_classes: 字典，指定要启用的特征类别
+            filter_settings: 字典，包含滤波器设置
+        """
+        # 默认启用所有特征类别
+        if feature_classes is None:
+            feature_classes = {
+                'shape': True,
+                'firstorder': True,
+                'glcm': True,
+                'gldm': True,
+                'glrlm': True,
+                'glszm': True,
+                'ngtdm': True
+            }
+
+        self.feature_classes = feature_classes
+        self.filter_settings = filter_settings or {'enabledImageTypes': ['Original']}
+
+        # 创建特征提取器
         self.extractor = featureextractor.RadiomicsFeatureExtractor()
 
-        self.extractor.enableFeatureClassByName('shape')
-        self.extractor.enableFeatureClassByName('firstorder')
-        self.extractor.enableFeatureClassByName('glcm')
-        self.extractor.enableFeatureClassByName('glrlm')
-        self.extractor.enableFeatureClassByName('glszm')
-        self.extractor.enableFeatureClassByName('gldm')
-        self.extractor.enableFeatureClassByName('ngtdm')
+        # 禁用所有特征类别
+        self.extractor.disableAllFeatures()
+
+        # 启用指定的特征类别
+        for feature_class, enabled in feature_classes.items():
+            if enabled:
+                self.extractor.enableFeatureClassByName(feature_class)
+
+        # 配置滤波器
+        if 'enabledImageTypes' in self.filter_settings:
+            self.extractor._settings['enabledImageTypes'] = self.filter_settings['enabledImageTypes']
 
     def convert_dicom_series_to_sitk(self, dicom_series) -> sitk.Image:
         """将 DICOM 序列转换为 SimpleITK Image"""
@@ -93,8 +118,21 @@ class RadiomicsFeatureExtractor:
 
         return mask
 
-    def extract_features_for_rois(self, image: sitk.Image, masks_dict: Dict[str, sitk.Image]) -> pd.DataFrame:
-        """为多个 ROI 提取特征"""
+    def extract_features_for_rois(self, image: sitk.Image, masks_dict: Dict[str, sitk.Image],
+                                   feature_classes: Dict[str, bool] = None,
+                                   filter_settings: Dict = None) -> pd.DataFrame:
+        """为多个 ROI 提取特征
+
+        Args:
+            image: SimpleITK 图像
+            masks_dict: ROI 名称到掩模的字典
+            feature_classes: 特征类别配置
+            filter_settings: 滤波器设置
+        """
+        # 如果提供了新的配置，重新初始化提取器
+        if feature_classes is not None or filter_settings is not None:
+            self.__init__(feature_classes=feature_classes, filter_settings=filter_settings)
+
         all_features = []
 
         for roi_name, mask in masks_dict.items():
