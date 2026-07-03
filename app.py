@@ -158,7 +158,7 @@ def load_dicom_and_rtstruct(folder_path: Path, key_prefix: str = ''):
             f"Loaded: {selected['modality']} - {selected['description'] or 'Unnamed'} "
             f"({sitk_image.GetSize()[0]}×{sitk_image.GetSize()[1]}×{sitk_image.GetSize()[2]})"
         )
-        st.write(f"**HU range:** {arr.min():.0f} ~ {arr.max():.0f}")
+        st.write(f"**HU range:** {max(arr.min(), -1024):.0f} ~ {arr.max():.0f}")
     else:
         st.warning("No imaging series found (CT/MR/PET etc.)")
 
@@ -331,8 +331,9 @@ def render_visualization(image, rois, handler, key_prefix: str = '') -> bool:
             )
             st.pyplot(fig)
             stats = visualizer.get_slice_stats(0, slice_index)
+            display_min = max(stats['min'], -1024)
             st.caption(
-                f"Data: min={stats['min']:.1f}, max={stats['max']:.1f}, "
+                f"Data: min={display_min:.1f}, max={stats['max']:.1f}, "
                 f"mean={stats['mean']:.1f}, shape={stats['shape']}"
             )
 
@@ -516,45 +517,80 @@ def render_dosomics_section(dose_image, rois, handler, key_prefix: str = ''):
             )
 
         if st.button("Extract Dose Features & Compute DTH/OVH", key=f'{key_prefix}dose_extract_btn'):
-            with st.spinner("Processing dose features..."):
-                try:
-                    dose_extractor = RadiomicsFeatureExtractor()
-                    # Create masks from ROIs aligned to dose image
-                    masks_dict = {}
-                    for roi in rois:
-                        if roi.name in [selected_ptv] + selected_oars:
+            progress = st.progress(0, text="Starting dose analysis...")
+
+            try:
+                from radiomics import featureextractor
+                import plotly.graph_objects as go
+
+                # Step 1: Create ROI masks on dose grid
+                progress.progress(10, text="Creating ROI masks on dose grid...")
+                dose_extractor = RadiomicsFeatureExtractor()
+                target_names = [selected_ptv] + selected_oars
+                masks_dict = {}
+
+                for roi in rois:
+                    if roi.name in target_names:
+                        try:
                             mask = dose_extractor.convert_roi_to_mask(roi, None, dose_image)
-                            masks_dict[roi.name] = mask
+                            mask_arr = sitk.GetArrayFromImage(mask)
+                            if mask_arr.sum() > 0:
+                                masks_dict[roi.name] = mask
+                            else:
+                                st.warning(f"ROI '{roi.name}' has no voxels on dose grid — skipped")
+                        except Exception as e:
+                            st.warning(f"Could not create mask for '{roi.name}': {e}")
 
-                    if masks_dict:
-                        df_dose = extract_dose_features(dose_image, masks_dict)
-                        st.session_state[f'{key_prefix}dose_features_df'] = df_dose
+                progress.progress(30, text=f"Created {len(masks_dict)} ROI masks")
 
-                        # Compute DTH/OVH for selected OARs
-                        dth_results = {}
-                        ovh_results = {}
-                        ptv_mask = masks_dict.get(selected_ptv)
-                        if ptv_mask is not None:
-                            ptv_arr = sitk.GetArrayFromImage(ptv_mask)
-                            for oar_name in selected_oars:
-                                oar_mask = masks_dict.get(oar_name)
-                                if oar_mask is not None:
-                                    oar_arr = sitk.GetArrayFromImage(oar_mask)
-                                    spacing = dose_image.GetSpacing()
-                                    dth_bins, dth_fracs = compute_dth(oar_arr, ptv_arr, spacing)
-                                    ovh_dists, ovh_fracs = compute_ovh(oar_arr, ptv_arr, spacing)
-                                    dth_results[oar_name] = (dth_bins, dth_fracs)
-                                    ovh_results[oar_name] = (ovh_dists, ovh_fracs)
+                if not masks_dict:
+                    st.error("No valid ROI masks could be created on the dose grid. "
+                             "The dose image geometry may not overlap with the ROI contours.")
+                    progress.empty()
+                    return
 
-                        st.session_state[f'{key_prefix}dth_results'] = dth_results
-                        st.session_state[f'{key_prefix}ovh_results'] = ovh_results
-                        st.success(f"Dose features extracted for {len(masks_dict)} ROIs")
-                        st.rerun()
-                    else:
-                        st.warning("No masks could be created for selected ROIs")
-                except Exception as e:
-                    st.error(f"Dose analysis failed: {e}")
-                    st.exception(e)
+                # Step 2: Extract dose features
+                progress.progress(40, text="Extracting dose features...")
+                df_dose = extract_dose_features(dose_image, masks_dict)
+                st.session_state[f'{key_prefix}dose_features_df'] = df_dose
+                progress.progress(60, text=f"Extracted features for {len(df_dose)} ROIs")
+
+                # Step 3: Compute DTH/OVH
+                progress.progress(70, text="Computing DTH/OVH curves...")
+                dth_results = {}
+                ovh_results = {}
+                ptv_mask = masks_dict.get(selected_ptv)
+
+                if ptv_mask is not None:
+                    ptv_arr = sitk.GetArrayFromImage(ptv_mask)
+                    spacing = dose_image.GetSpacing()
+                    total_oars = len(selected_oars)
+
+                    for i, oar_name in enumerate(selected_oars):
+                        oar_mask = masks_dict.get(oar_name)
+                        if oar_mask is not None:
+                            oar_arr = sitk.GetArrayFromImage(oar_mask)
+                            dth_bins, dth_fracs = compute_dth(oar_arr, ptv_arr, spacing)
+                            ovh_dists, ovh_fracs = compute_ovh(oar_arr, ptv_arr, spacing)
+                            dth_results[oar_name] = (dth_bins, dth_fracs)
+                            ovh_results[oar_name] = (ovh_dists, ovh_fracs)
+
+                        pct = 70 + int(25 * (i + 1) / max(total_oars, 1))
+                        progress.progress(pct, text=f"DTH/OVH: {oar_name}")
+                else:
+                    st.warning(f"PTV mask '{selected_ptv}' not available for DTH/OVH computation")
+
+                st.session_state[f'{key_prefix}dth_results'] = dth_results
+                st.session_state[f'{key_prefix}ovh_results'] = ovh_results
+                progress.progress(100, text="Dose analysis complete!")
+                st.success(f"Dose features extracted for {len(masks_dict)} ROIs, "
+                           f"DTH/OVH computed for {len(dth_results)} OARs")
+                st.rerun()
+
+            except Exception as e:
+                progress.empty()
+                st.error(f"Dose analysis failed: {e}")
+                st.exception(e)
 
     # Display cached dose results
     dose_df = st.session_state.get(f'{key_prefix}dose_features_df')
