@@ -7,7 +7,7 @@
 # Radiomics logo: CT slice with ROI contours + feature data points
 # viewBox 0 0 48 48
 _RADIOMICS_LOGO_SVG = '''\
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" fill="none">
   <!-- Outer ring: CT slice boundary -->
   <circle cx="24" cy="24" r="21" stroke="white" stroke-width="1.5" opacity="0.9"/>
   <circle cx="24" cy="24" r="18" stroke="white" stroke-width="0.5" opacity="0.3"/>
@@ -36,7 +36,7 @@ _RADIOMICS_LOGO_SVG = '''\
 </svg>'''
 
 LOGO_LARGE = _RADIOMICS_LOGO_SVG  # 48×48 — header
-LOGO_SMALL = _RADIOMICS_LOGO_SVG.replace('viewBox="0 0 48 48"', 'viewBox="0 0 48 48" width="20" height="20"')
+LOGO_SMALL = _RADIOMICS_LOGO_SVG.replace('width="48" height="48"', 'width="20" height="20"')
 
 
 # ─────────────────────────────────────────────
