@@ -470,14 +470,54 @@ def main():
     </div>
     ''', unsafe_allow_html=True)
 
+    # Sidebar
     st.sidebar.markdown("### Mode")
     mode = st.sidebar.radio("Select mode", ["Beginner", "Advanced"],
                             label_visibility="collapsed")
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### About")
+    st.sidebar.markdown(
+        "Open-source radiomics platform for medical image feature extraction. "
+        "Supports CT/MR/PET with RTSTRUCT contours."
+    )
+
+    st.sidebar.markdown("### How to Cite")
+    st.sidebar.markdown(
+        "If you use this tool in your research, please cite:"
+    )
+    st.sidebar.code(
+        "Wang, X. Radiomics Tool: Medical Image\n"
+        "Feature Extraction & Analysis Platform.\n"
+        "https://github.com/wangxs89/Radiomics-Tools"
+    )
+
+    st.sidebar.markdown("### Contact")
+    st.sidebar.markdown(
+        "For questions, bug reports, or feature requests:\n\n"
+        "📧 [wangxiaoshen0408@126.com]"
+        "(mailto:wangxiaoshen0408@126.com)"
+    )
+
+    st.sidebar.markdown("---")
+    st.sidebar.caption("v1.0 · Built with Streamlit & PyRadiomics")
 
     if mode == "Beginner":
         beginner_mode()
     else:
         advanced_mode()
+
+    # Footer
+    st.markdown("---")
+    st.markdown(
+        '<div style="text-align:center; color:#94A3B8; font-size:0.8rem; padding:1rem 0;">'
+        "Radiomics Tool © 2026 · "
+        "Contact: wangxiaoshen0408@126.com · "
+        '<a href="https://github.com/wangxs89/Radiomics-Tools" '
+        'style="color:#94A3B8;">GitHub</a>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 # ─────────────────────────────────────────────
