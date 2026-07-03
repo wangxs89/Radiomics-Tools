@@ -15,7 +15,7 @@ from src.results_exporter import ResultsExporter
 from src.image_preprocessor import ImagePreprocessor
 from src.filters import RadiomicsFilterConfig
 from src.report_generator import ReportGenerator
-from src.ui_theme import APP_CSS, get_step_indicator_html
+from src.ui_theme import APP_CSS, get_step_indicator_html, get_header_html, get_sidebar_logo_html, get_hero_banner_html, get_footer_html
 
 
 st.set_page_config(page_title="Radiomics Tool", page_icon="", layout="wide")
@@ -463,14 +463,11 @@ def render_visualization_report(df_features, key_prefix: str = '') -> None:
 # ─────────────────────────────────────────────
 
 def main():
-    st.markdown('''
-    <div class="main-header">
-        <h1>Radiomics Tool</h1>
-        <p>Medical Image Feature Extraction &amp; Analysis Platform</p>
-    </div>
-    ''', unsafe_allow_html=True)
+    # Header with logo
+    st.markdown(get_header_html(), unsafe_allow_html=True)
 
     # Sidebar
+    st.sidebar.markdown(get_sidebar_logo_html(), unsafe_allow_html=True)
     st.sidebar.markdown("### Mode")
     mode = st.sidebar.radio("Select mode", ["Beginner", "Advanced"],
                             label_visibility="collapsed")
@@ -502,22 +499,16 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.caption("v1.0 · Built with Streamlit & PyRadiomics")
 
+    # Hero banner with radiomics illustration
+    st.markdown(get_hero_banner_html(), unsafe_allow_html=True)
+
     if mode == "Beginner":
         beginner_mode()
     else:
         advanced_mode()
 
     # Footer
-    st.markdown("---")
-    st.markdown(
-        '<div style="text-align:center; color:#94A3B8; font-size:0.8rem; padding:1rem 0;">'
-        "Radiomics Tool © 2026 · "
-        "Contact: wangxiaoshen0408@126.com · "
-        '<a href="https://github.com/wangxs89/Radiomics-Tools" '
-        'style="color:#94A3B8;">GitHub</a>'
-        "</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(get_footer_html(), unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────
