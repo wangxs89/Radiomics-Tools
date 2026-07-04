@@ -692,6 +692,7 @@ def beginner_mode():
                 else:
                     progress.progress(100, text="Done!")
 
+                progress.empty()
                 st.success(
                     f"Imaging features: {'OK' if imaging_ok else 'skipped'}"
                     + (f" | Dose features: {len(st.session_state.get('dose_features_df', []))} ROIs" if dose_image else "")
@@ -1024,6 +1025,7 @@ def advanced_mode():
                 else:
                     progress.progress(100, text="Done!")
 
+                progress.empty()
                 st.success(
                     f"Imaging features: {'OK' if imaging_ok else 'skipped'}"
                     + (f" | Dose features: {len(st.session_state.get('adv_dose_features_df', []))} ROIs" if dose_image else "")
