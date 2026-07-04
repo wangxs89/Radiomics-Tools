@@ -548,10 +548,8 @@ def render_dosomics_section(ct_image, dose_image, rois, handler, key_prefix: str
                             ct_mask_arr = sitk.GetArrayFromImage(ct_mask)
                             if ct_mask_arr.sum() > 0:
                                 ct_masks_dict[roi.name] = ct_mask
-                            else:
-                                st.warning(f"ROI '{roi.name}' has no voxels on CT grid — skipped")
-                        except Exception as e:
-                            st.warning(f"Could not create CT mask for '{roi.name}': {e}")
+                        except Exception:
+                            pass
 
                 progress.progress(25, text=f"Created {len(ct_masks_dict)} CT masks, resampling to dose grid...")
 
@@ -565,17 +563,17 @@ def render_dosomics_section(ct_image, dose_image, rois, handler, key_prefix: str
                             masks_dict[roi_name] = dose_mask
                         else:
                             # Fallback: try creating mask directly on dose grid
-                            direct_mask = dose_extractor.convert_roi_to_mask(
-                                next(r for r in rois if r.name == roi_name), None, dose_image,
-                            )
-                            direct_arr = sitk.GetArrayFromImage(direct_mask)
-                            if direct_arr.sum() > 0:
-                                masks_dict[roi_name] = direct_mask
-                                st.info(f"ROI '{roi_name}': used direct dose-grid mask (resample had no overlap)")
-                            else:
-                                st.warning(f"ROI '{roi_name}' has no overlap with dose grid — skipped")
-                    except Exception as e:
-                        st.warning(f"Could not process '{roi_name}' for dose grid: {e}")
+                            try:
+                                direct_mask = dose_extractor.convert_roi_to_mask(
+                                    next(r for r in rois if r.name == roi_name), None, dose_image,
+                                )
+                                direct_arr = sitk.GetArrayFromImage(direct_mask)
+                                if direct_arr.sum() > 0:
+                                    masks_dict[roi_name] = direct_mask
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
                 progress.progress(30, text=f"Created {len(masks_dict)} ROI masks")
 
