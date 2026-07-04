@@ -94,6 +94,17 @@ def load_dicom_and_rtstruct(folder_path: Path, key_prefix: str = ''):
             first_ds = pydicom.dcmread(str(file_names[0]), stop_before_pixels=True)
             modality = str(getattr(first_ds, 'Modality', 'UNKNOWN'))
             series_desc = str(getattr(first_ds, 'SeriesDescription', ''))
+
+            # Sort files by Z position (ImagePositionPatient[2])
+            def get_z_pos(fname):
+                try:
+                    ds = pydicom.dcmread(str(fname), stop_before_pixels=True)
+                    return float(ds.ImagePositionPatient[2])
+                except Exception:
+                    return 0.0
+
+            file_names = sorted(file_names, key=get_z_pos)
+
             series_info.append({
                 'id': sid, 'files': file_names,
                 'modality': modality, 'description': series_desc,
