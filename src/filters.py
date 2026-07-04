@@ -1,5 +1,5 @@
 """滤波器模块"""
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 
 class RadiomicsFilterConfig:
@@ -20,6 +20,21 @@ class RadiomicsFilterConfig:
             'name': 'Wavelet',
             'description': '小波变换',
             'params': {'wavelet_type': ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']}
+        },
+        'gradient': {
+            'name': 'Gradient',
+            'description': '梯度幅值滤波',
+            'params': {}
+        },
+        'lbp2d': {
+            'name': 'LBP 2D',
+            'description': '二维局部二值模式滤波',
+            'params': {}
+        },
+        'lbp3d': {
+            'name': 'LBP 3D',
+            'description': '三维局部二值模式滤波',
+            'params': {}
         },
         'square': {
             'name': 'Square',
@@ -45,12 +60,17 @@ class RadiomicsFilterConfig:
 
     @staticmethod
     def build_settings(enabled_filters: List[str], log_sigmas: List[float] = None,
-                      wavelet_types: List[str] = None) -> Dict[str, Any]:
+                      wavelet_types: List[str] = None,
+                      bin_width: Optional[float] = None,
+                      resampled_pixel_spacing: Optional[List[float]] = None,
+                      force_2d: bool = False,
+                      force_2d_dimension: int = 0) -> Dict[str, Any]:
         """构建 PyRadiomics 设置"""
         settings = {
             'enabledImageTypes': [],
             'imageTypeSettings': {},
-            'selectedWaveletSubbands': wavelet_types or []
+            'selectedWaveletSubbands': wavelet_types or [],
+            'extractorSettings': {}
         }
 
         if 'original' in enabled_filters:
@@ -70,6 +90,18 @@ class RadiomicsFilterConfig:
             settings['imageTypeSettings']['Wavelet'] = {}
             settings['selectedWaveletSubbands'] = types
 
+        if 'gradient' in enabled_filters:
+            settings['enabledImageTypes'].append('Gradient')
+            settings['imageTypeSettings']['Gradient'] = {}
+
+        if 'lbp2d' in enabled_filters:
+            settings['enabledImageTypes'].append('LBP2D')
+            settings['imageTypeSettings']['LBP2D'] = {}
+
+        if 'lbp3d' in enabled_filters:
+            settings['enabledImageTypes'].append('LBP3D')
+            settings['imageTypeSettings']['LBP3D'] = {}
+
         if 'square' in enabled_filters:
             settings['enabledImageTypes'].append('Square')
             settings['imageTypeSettings']['Square'] = {}
@@ -85,5 +117,21 @@ class RadiomicsFilterConfig:
         if 'logarithm' in enabled_filters:
             settings['enabledImageTypes'].append('Logarithm')
             settings['imageTypeSettings']['Logarithm'] = {}
+
+        if not settings['imageTypeSettings']:
+            settings['enabledImageTypes'].append('Original')
+            settings['imageTypeSettings']['Original'] = {}
+
+        if bin_width is not None:
+            settings['extractorSettings']['binWidth'] = float(bin_width)
+
+        if resampled_pixel_spacing:
+            settings['extractorSettings']['resampledPixelSpacing'] = [
+                float(v) for v in resampled_pixel_spacing
+            ]
+
+        if force_2d:
+            settings['extractorSettings']['force2D'] = True
+            settings['extractorSettings']['force2Ddimension'] = int(force_2d_dimension)
 
         return settings

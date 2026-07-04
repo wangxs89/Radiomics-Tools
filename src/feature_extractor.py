@@ -32,10 +32,12 @@ class RadiomicsFeatureExtractor:
         self.filter_settings = filter_settings or {
             'enabledImageTypes': ['Original'],
             'imageTypeSettings': {'Original': {}},
+            'extractorSettings': {},
         }
+        self.extractor_settings = self.filter_settings.get('extractorSettings', {})
 
         # 创建特征提取器
-        self.extractor = featureextractor.RadiomicsFeatureExtractor()
+        self.extractor = featureextractor.RadiomicsFeatureExtractor(**self.extractor_settings)
 
         # 禁用所有特征类别
         self.extractor.disableAllFeatures()
