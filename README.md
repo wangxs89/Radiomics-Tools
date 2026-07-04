@@ -68,6 +68,56 @@ http://localhost:8501
 
 如果端口被占用，Streamlit 会自动使用其他端口，例如 `8502`。
 
+## App 界面展示与使用方法
+
+### Beginner Mode: 单病例快速提取
+
+![Beginner Mode](docs/images/app-beginner.jpg)
+
+Beginner Mode 适合常规病例分析。选择病例文件夹后，应用会自动扫描 DICOM 影像、RTSTRUCT 和可选 RTDOSE，并引导用户完成 ROI 验证、特征提取、结果下载和保存到临时数据库。
+
+推荐流程：
+
+1. 在左侧 Mode 中选择 Beginner。
+2. 在 Folder path 输入单个病例文件夹路径，或点击 Browse Folder。
+3. 检查自动识别出的影像序列、RTSTRUCT、RTDOSE 和 ROI。
+4. 在 ROI visualization 中确认勾画位置和切片是否正确。
+5. 选择需要分析的 ROI，输入或确认 Case ID。
+6. 点击 Extract All Features 提取影像组学和剂量组学特征。
+7. 在结果表中查看特征矩阵，下载 CSV/Excel，或点击保存按钮写入临时数据库。
+
+### Advanced Mode: 自定义预处理、滤波器和特征类别
+
+![Advanced Mode](docs/images/app-advanced.jpg)
+
+Advanced Mode 适合需要控制实验参数的组学研究。该模式允许设置图像预处理、PyRadiomics 参数、图像滤波器和特征类别，适用于比较不同 bin width、重采样 spacing、2D/3D 提取策略或滤波器组合。
+
+典型用法：
+
+1. 在左侧 Mode 中选择 Advanced。
+2. 选择病例文件夹并确认影像序列。
+3. 在 Image Preprocessing 中选择是否进行归一化、重采样等预处理。
+4. 在 Filter Selection 中选择 Original、LoG、Wavelet、Gradient、LBP2D、LBP3D 等图像类型。
+5. 在 Feature Types 中选择 firstorder、shape、shape2D、GLCM、GLRLM、GLSZM、GLDM、NGTDM。
+6. 在 PyRadiomics Settings 中设置 `binWidth`、`resampledPixelSpacing`、`force2D` 等参数。
+7. 验证 ROI 后点击 Extract All Features，结果会保留 CaseID、Series、SeriesUID、Modality、ROI 和 FeatureKind 等字段。
+
+### Database & Modeling: 临时数据库、随访表和预测建模
+
+![Database and Modeling](docs/images/app-database-modeling.jpg)
+
+Database & Modeling 页面用于把多个病例的组学结果汇总为建模数据，并与用户上传的临床随访表合并。该页面包含 Saved Results、Clinical Follow-up 和 Modeling 三个子标签页。
+
+建模使用步骤：
+
+1. 先在 Beginner 或 Advanced 模式中提取病例特征，并点击 Save Imaging Features 或 Save Dose Features 保存。
+2. 进入 Database & Modeling 的 Saved Results，查看数据库中已保存的病例结果。
+3. 在 Clinical Follow-up 上传 CSV/XLSX/XLS 随访表，并选择与 App 中 Case ID 对应的列。
+4. 在 Modeling 中选择 outcome/target column。
+5. 选择用于建模的 omics predictors，也可以从随访表中选择已知临床参数作为 clinical predictors。
+6. 选择任务类型、数据划分比例、缺失值处理、标准化和模型方法。
+7. 点击 Run Modeling 后查看 validation/test 评价指标，并下载建模结果。
+
 ## 快速使用流程
 
 1. 打开应用后选择 Beginner 或 Advanced 模式。
@@ -391,21 +441,31 @@ python3 -m compileall app.py src tests
 - 建模结果高度依赖样本量、终点定义、数据泄漏控制和外部验证；本工具输出的是探索性建模结果。
 - 临时数据库为本地 SQLite 文件，不适合作为多用户生产数据库。
 
-## 技术栈
+## 软件与工具引用
 
-- Streamlit
-- PyRadiomics
-- SimpleITK
-- pydicom
-- pandas / numpy / scipy
-- scikit-learn
-- scikit-image
-- Plotly
-- SQLite
+本项目使用以下开源工具和 Python 库。发表基于本 App 的研究时，建议在方法学部分注明软件名称、版本号和关键参数，并按期刊要求引用实际使用到的工具。
+
+| 工具/库 | 在本项目中的用途 | 推荐引用或官方链接 |
+| --- | --- | --- |
+| Python | 应用运行环境 | Python Software Foundation. Python Language Reference. https://docs.python.org/3/reference/ |
+| Streamlit | Web App 界面、表单、标签页、文件上传和结果展示 | Streamlit documentation. https://docs.streamlit.io/ |
+| PyRadiomics | 影像组学和剂量组学特征提取核心引擎 | van Griethuysen et al. (2017). Computational Radiomics System to Decode the Radiographic Phenotype. Cancer Research, 77(21), e104-e107. https://doi.org/10.1158/0008-5472.CAN-17-0339 |
+| SimpleITK | DICOM/医学影像读取、重采样、空间几何处理 | Lowekamp et al. (2013). The Design of SimpleITK. Frontiers in Neuroinformatics, 7:45. https://doi.org/10.3389/fninf.2013.00045 |
+| pydicom | DICOM 元数据读取、RTSTRUCT/RTDOSE 文件解析 | pydicom FAQ 建议引用对应版本 Zenodo DOI，或 Mason et al., pydicom: An open source DICOM library. https://pydicom.github.io/pydicom/stable/faq/index.html |
+| NumPy | 数组计算、mask 和剂量矩阵处理 | Harris et al. (2020). Array programming with NumPy. Nature, 585, 357-362. https://doi.org/10.1038/s41586-020-2649-2 |
+| pandas | 特征矩阵、随访表、建模数据集整理 | McKinney (2010). Data Structures for Statistical Computing in Python. Proceedings of the 9th Python in Science Conference. https://doi.org/10.25080/Majora-92bf1922-00a |
+| SciPy | 统计分析、距离变换等科学计算 | Virtanen et al. (2020). SciPy 1.0: fundamental algorithms for scientific computing in Python. Nature Methods, 17, 261-272. https://doi.org/10.1038/s41592-019-0686-2 |
+| scikit-image | PyRadiomics LBP2D/LBP3D 等图像滤波相关依赖 | van der Walt et al. (2014). scikit-image: Image processing in Python. PeerJ, 2:e453. https://doi.org/10.7717/peerj.453 |
+| scikit-learn | 回归、分类、聚类、数据划分、预处理和模型评价 | Pedregosa et al. (2011). Scikit-learn: Machine Learning in Python. JMLR, 12, 2825-2830. https://jmlr.org/papers/v12/pedregosa11a.html |
+| Plotly | 交互式统计图表和报告图形 | Plotly Technologies Inc. (2015). Collaborative data science. https://plotly.com/chart-studio-help/citations/ |
+| Matplotlib | ROI 可视化和图像叠加显示 | Hunter (2007). Matplotlib: A 2D Graphics Environment. Computing in Science & Engineering, 9(3), 90-95. https://doi.org/10.1109/MCSE.2007.55 |
+| openpyxl | Excel 文件读取与结果导出 | openpyxl documentation. https://openpyxl.readthedocs.io/ |
+| SQLite | 本地临时数据库 `.radiomics_tmp/radiomics_results.sqlite3` | SQLite documentation. https://sqlite.org/docs.html |
+| pytest | 自动化测试 | pytest documentation. https://docs.pytest.org/ |
 
 ## Citation
 
-如果使用本工具发表研究，请同时引用本项目和 PyRadiomics 原始论文。
+如果使用本工具发表研究，请同时引用本项目、PyRadiomics 原始论文，以及上表中实际参与分析流程的关键软件。
 
 Radiomics Tools:
 
@@ -427,7 +487,12 @@ https://doi.org/10.1158/0008-5472.CAN-17-0339
 ## 参考
 
 - PyRadiomics Documentation: https://pyradiomics.readthedocs.io/
+- PyRadiomics Feature Definitions: https://pyradiomics.readthedocs.io/en/latest/features.html
 - PyRadiomics GitHub: https://github.com/AIM-Harvard/pyradiomics
+- Streamlit Documentation: https://docs.streamlit.io/
+- SimpleITK Documentation: https://simpleitk.readthedocs.io/
+- pydicom Documentation: https://pydicom.github.io/pydicom/
+- scikit-learn Documentation: https://scikit-learn.org/stable/
 
 ## License
 
