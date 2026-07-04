@@ -591,19 +591,29 @@ def beginner_mode():
 
     # Step 2: Combined Extraction (imaging + dose)
     if st.session_state.verification_complete:
-        init_state({'feature_extractor': RadiomicsFeatureExtractor()})
+        try:
+            init_state({'feature_extractor': RadiomicsFeatureExtractor()})
+        except Exception as e:
+            st.error(f"Failed to initialize feature extractor: {e}")
+            st.stop()
 
         rois = st.session_state.rois
         roi_names = st.session_state.roi_handler.get_roi_names(rois)
         dose_image = st.session_state.get('dose_image')
         ct_image = st.session_state.get('dicom_image')
 
+        st.caption(f"Debug: {len(roi_names)} ROIs available, dose={'Yes' if dose_image else 'No'}")
+
         with section_card():
             st.markdown("#### 2. Extract Features")
-            selected_rois = st.multiselect(
-                "Select ROIs for feature extraction", roi_names,
-                default=roi_names[:1], key='feature_rois',
-            )
+
+            if not roi_names:
+                st.warning("No ROIs available for extraction")
+            else:
+                selected_rois = st.multiselect(
+                    "Select ROIs for feature extraction", roi_names,
+                    default=roi_names[:1], key='feature_rois',
+                )
 
             # PTV selector (only if dose available)
             selected_ptv = None
@@ -627,16 +637,17 @@ def beginner_mode():
             else:
                 selected_oars = []
 
-            if st.button("Extract All Features"):
-                progress = st.progress(0, text="Starting extraction...")
+            try:
+                if st.button("Extract All Features"):
+                    progress = st.progress(0, text="Starting extraction...")
 
-                # Step 1: Imaging features
-                progress.progress(10, text="Extracting imaging features...")
-                imaging_ok = run_extraction(
-                    st.session_state.feature_extractor,
-                    ct_image, rois, selected_rois, key_prefix='',
-                )
-                progress.progress(50, text="Imaging features done")
+                    # Step 1: Imaging features
+                    progress.progress(10, text="Extracting imaging features...")
+                    imaging_ok = run_extraction(
+                        st.session_state.feature_extractor,
+                        ct_image, rois, selected_rois, key_prefix='',
+                    )
+                    progress.progress(50, text="Imaging features done")
 
                 # Step 2: Dose features + DTH/OVH (if dose available)
                 if dose_image is not None and imaging_ok:
@@ -709,6 +720,9 @@ def beginner_mode():
                     + (f" | Dose features: {len(st.session_state.get('dose_features_df', []))} ROIs" if dose_image else "")
                 )
                 st.rerun()
+            except Exception as e:
+                st.error(f"Extraction failed: {e}")
+                st.exception(e)
 
     # Display cached imaging results
     if st.session_state.features_df is not None:
