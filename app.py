@@ -489,215 +489,6 @@ def render_visualization_report(df_features, key_prefix: str = '') -> None:
                 st.warning(f"Could not generate summary statistics: {e}")
 
 
-# ─────────────────────────────────────────────
-#  Dosomics Section
-# ─────────────────────────────────────────────
-
-def render_dosomics_section(ct_image, dose_image, rois, handler, key_prefix: str = ''):
-    """Render dose feature extraction and DTH/OVH analysis.
-
-    Args:
-        ct_image: CT SimpleITK image (used for initial mask creation)
-        dose_image: Dose SimpleITK image (target grid for features)
-        rois: list of ROI objects
-        handler: ROIHandler instance
-        key_prefix: session state key prefix
-    """
-    with section_card():
-        st.markdown("#### Dose Analysis")
-        st.caption("Extract features from dose distribution and analyze OAR-target spatial relationships")
-
-        roi_names = handler.get_roi_names(rois)
-        ptv_candidates = find_ptv_rois(roi_names)
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**Target Volume**")
-            selected_ptv = st.selectbox(
-                "Select PTV/Target",
-                ptv_candidates if ptv_candidates else roi_names,
-                key=f'{key_prefix}ptv_select',
-            )
-        with col2:
-            st.markdown("**OARs to Analyze**")
-            oar_options = [n for n in roi_names if n != selected_ptv]
-            selected_oars = st.multiselect(
-                "Select OARs",
-                oar_options,
-                default=oar_options[:3] if len(oar_options) > 3 else oar_options,
-                key=f'{key_prefix}oar_select',
-            )
-
-        if st.button("Extract Dose Features & Compute DTH/OVH", key=f'{key_prefix}dose_extract_btn'):
-            progress = st.progress(0, text="Starting dose analysis...")
-
-            try:
-                from radiomics import featureextractor
-                import plotly.graph_objects as go
-
-                # Step 1: Create ROI masks on CT grid, then resample to dose grid
-                progress.progress(10, text="Creating ROI masks on CT grid...")
-                dose_extractor = RadiomicsFeatureExtractor()
-                target_names = [selected_ptv] + selected_oars
-                ct_masks_dict = {}
-
-                for roi in rois:
-                    if roi.name in target_names:
-                        try:
-                            ct_mask = dose_extractor.convert_roi_to_mask(roi, None, ct_image)
-                            ct_mask_arr = sitk.GetArrayFromImage(ct_mask)
-                            if ct_mask_arr.sum() > 0:
-                                ct_masks_dict[roi.name] = ct_mask
-                        except Exception:
-                            pass
-
-                progress.progress(25, text=f"Created {len(ct_masks_dict)} CT masks, resampling to dose grid...")
-
-                # Resample CT masks to dose grid
-                masks_dict = {}
-                for roi_name, ct_mask in ct_masks_dict.items():
-                    try:
-                        dose_mask = resample_mask_to_image(ct_mask, dose_image)
-                        dose_mask_arr = sitk.GetArrayFromImage(dose_mask)
-                        if dose_mask_arr.sum() > 0:
-                            masks_dict[roi_name] = dose_mask
-                        else:
-                            # Fallback: try creating mask directly on dose grid
-                            try:
-                                direct_mask = dose_extractor.convert_roi_to_mask(
-                                    next(r for r in rois if r.name == roi_name), None, dose_image,
-                                )
-                                direct_arr = sitk.GetArrayFromImage(direct_mask)
-                                if direct_arr.sum() > 0:
-                                    masks_dict[roi_name] = direct_mask
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                progress.progress(30, text=f"Created {len(masks_dict)} ROI masks")
-
-                if not masks_dict:
-                    st.error("No valid ROI masks could be created on the dose grid. "
-                             "The dose image geometry may not overlap with the ROI contours.")
-                    progress.empty()
-                    return
-
-                # Step 2: Extract dose features
-                progress.progress(40, text="Extracting dose features...")
-                df_dose = extract_dose_features(dose_image, masks_dict)
-                st.session_state[f'{key_prefix}dose_features_df'] = df_dose
-                progress.progress(60, text=f"Extracted features for {len(df_dose)} ROIs")
-
-                # Step 3: Compute DTH/OVH
-                progress.progress(70, text="Computing DTH/OVH curves...")
-                dth_results = {}
-                ovh_results = {}
-                ptv_mask = masks_dict.get(selected_ptv)
-
-                if ptv_mask is not None:
-                    ptv_arr = sitk.GetArrayFromImage(ptv_mask)
-                    spacing = dose_image.GetSpacing()
-                    total_oars = len(selected_oars)
-
-                    for i, oar_name in enumerate(selected_oars):
-                        oar_mask = masks_dict.get(oar_name)
-                        if oar_mask is not None:
-                            oar_arr = sitk.GetArrayFromImage(oar_mask)
-                            dth_bins, dth_fracs = compute_dth(oar_arr, ptv_arr, spacing)
-                            ovh_dists, ovh_fracs = compute_ovh(oar_arr, ptv_arr, spacing)
-                            dth_results[oar_name] = (dth_bins, dth_fracs)
-                            ovh_results[oar_name] = (ovh_dists, ovh_fracs)
-
-                        pct = 70 + int(25 * (i + 1) / max(total_oars, 1))
-                        progress.progress(pct, text=f"DTH/OVH: {oar_name}")
-                else:
-                    st.warning(f"PTV mask '{selected_ptv}' not available for DTH/OVH computation")
-
-                st.session_state[f'{key_prefix}dth_results'] = dth_results
-                st.session_state[f'{key_prefix}ovh_results'] = ovh_results
-                progress.progress(100, text="Dose analysis complete!")
-                st.success(f"Dose features extracted for {len(masks_dict)} ROIs, "
-                           f"DTH/OVH computed for {len(dth_results)} OARs")
-                st.rerun()
-
-            except Exception as e:
-                progress.empty()
-                st.error(f"Dose analysis failed: {e}")
-                st.exception(e)
-
-    # Display cached dose results
-    dose_df = st.session_state.get(f'{key_prefix}dose_features_df')
-    if dose_df is not None and not dose_df.empty:
-        with section_card():
-            st.markdown("#### Dose Feature Matrix")
-            st.dataframe(dose_df, use_container_width=True)
-
-            exporter = ResultsExporter()
-            csv = exporter.to_csv(dose_df)
-            st.download_button(
-                label="Download Dose Features (CSV)",
-                data=csv,
-                file_name=f"dose_features_{key_prefix or 'beginner'}.csv",
-                mime="text/csv",
-            )
-
-        # DTH/OVH Visualization
-        dth_results = st.session_state.get(f'{key_prefix}dth_results', {})
-        ovh_results = st.session_state.get(f'{key_prefix}ovh_results', {})
-
-        if dth_results or ovh_results:
-            with section_card():
-                st.markdown("#### Spatial Relationship Analysis")
-                st.caption("DTH = Distance-to-Target Histogram | OVH = Overlap Volume Histogram")
-
-                import plotly.graph_objects as go
-
-                dth_tab, ovh_tab = st.tabs(["DTH Curves", "OVH Curves"])
-
-                with dth_tab:
-                    if dth_results:
-                        fig_dth = go.Figure()
-                        for oar_name, (bins, fracs) in dth_results.items():
-                            fig_dth.add_trace(go.Scatter(
-                                x=bins, y=fracs * 100, mode='lines+markers',
-                                name=oar_name, marker_size=4,
-                            ))
-                        fig_dth.update_layout(
-                            title="Distance-to-Target Histogram (DTH)",
-                            xaxis_title="Distance to Target (mm)",
-                            yaxis_title="OAR Volume Fraction (%)",
-                            legend=dict(orientation="h", yanchor="bottom", y=-0.3),
-                            margin=dict(t=40, b=80),
-                        )
-                        st.plotly_chart(fig_dth, use_container_width=True)
-                    else:
-                        st.info("No DTH data available. Select OARs and re-run extraction.")
-
-                with ovh_tab:
-                    if ovh_results:
-                        fig_ovh = go.Figure()
-                        for oar_name, (dists, fracs) in ovh_results.items():
-                            fig_ovh.add_trace(go.Scatter(
-                                x=dists, y=fracs * 100, mode='lines+markers',
-                                name=oar_name, marker_size=4,
-                            ))
-                        fig_ovh.update_layout(
-                            title="Overlap Volume Histogram (OVH)",
-                            xaxis_title="Distance from Target Surface (mm)",
-                            yaxis_title="Cumulative OAR Overlap (%)",
-                            legend=dict(orientation="h", yanchor="bottom", y=-0.3),
-                            margin=dict(t=40, b=80),
-                        )
-                        st.plotly_chart(fig_ovh, use_container_width=True)
-                    else:
-                        st.info("No OVH data available. Select OARs and re-run extraction.")
-
-
-# ─────────────────────────────────────────────
-#  Main
-# ────────────────────────────────────────────
-
 def main():
     # Header with logo
     st.markdown(get_header_html(), unsafe_allow_html=True)
@@ -787,12 +578,14 @@ def beginner_mode():
         if verified:
             st.session_state.verification_complete = True
 
-    # Step 2: Extraction
+    # Step 2: Combined Extraction (imaging + dose)
     if st.session_state.verification_complete:
         init_state({'feature_extractor': RadiomicsFeatureExtractor()})
 
         rois = st.session_state.rois
         roi_names = st.session_state.roi_handler.get_roi_names(rois)
+        dose_image = st.session_state.get('dose_image')
+        ct_image = st.session_state.get('dicom_image')
 
         with section_card():
             st.markdown("#### 2. Extract Features")
@@ -801,15 +594,111 @@ def beginner_mode():
                 default=roi_names[:1], key='feature_rois',
             )
 
-            if st.button("Extract Features"):
-                run_extraction(
+            # PTV selector (only if dose available)
+            selected_ptv = None
+            if dose_image is not None:
+                ptv_candidates = find_ptv_rois(roi_names)
+                oar_options = [n for n in roi_names if n not in ptv_candidates]
+                col_ptv, col_oar = st.columns(2)
+                with col_ptv:
+                    st.markdown("**Target for DTH/OVH**")
+                    selected_ptv = st.selectbox(
+                        "PTV/Target", ptv_candidates if ptv_candidates else roi_names,
+                        key='ptv_select',
+                    )
+                with col_oar:
+                    st.markdown("**OARs for DTH/OVH**")
+                    selected_oars = st.multiselect(
+                        "Select OARs", oar_options,
+                        default=oar_options[:3] if len(oar_options) > 3 else oar_options,
+                        key='oar_select',
+                    )
+            else:
+                selected_oars = []
+
+            if st.button("Extract All Features"):
+                progress = st.progress(0, text="Starting extraction...")
+
+                # Step 1: Imaging features
+                progress.progress(10, text="Extracting imaging features...")
+                imaging_ok = run_extraction(
                     st.session_state.feature_extractor,
-                    st.session_state.dicom_image,
-                    rois, selected_rois, key_prefix='',
+                    ct_image, rois, selected_rois, key_prefix='',
+                )
+                progress.progress(50, text="Imaging features done")
+
+                # Step 2: Dose features + DTH/OVH (if dose available)
+                if dose_image is not None and imaging_ok:
+                    try:
+                        from radiomics import featureextractor
+                        import plotly.graph_objects as go
+
+                        progress.progress(55, text="Creating ROI masks...")
+                        dose_extractor = RadiomicsFeatureExtractor()
+                        target_names = [selected_ptv] + selected_oars if selected_ptv else []
+                        ct_masks = {}
+                        for roi in rois:
+                            if roi.name in target_names:
+                                try:
+                                    m = dose_extractor.convert_roi_to_mask(roi, None, ct_image)
+                                    if sitk.GetArrayFromImage(m).sum() > 0:
+                                        ct_masks[roi.name] = m
+                                except Exception:
+                                    pass
+
+                        progress.progress(65, text="Resampling to dose grid...")
+                        dose_masks = {}
+                        for name, ct_m in ct_masks.items():
+                            try:
+                                dm = resample_mask_to_image(ct_m, dose_image)
+                                if sitk.GetArrayFromImage(dm).sum() > 0:
+                                    dose_masks[name] = dm
+                                else:
+                                    try:
+                                        dm2 = dose_extractor.convert_roi_to_mask(
+                                            next(r for r in rois if r.name == name), None, dose_image)
+                                        if sitk.GetArrayFromImage(dm2).sum() > 0:
+                                            dose_masks[name] = dm2
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
+                        progress.progress(75, text="Extracting dose features...")
+                        if dose_masks:
+                            df_dose = extract_dose_features(dose_image, dose_masks)
+                            st.session_state['dose_features_df'] = df_dose
+
+                            progress.progress(85, text="Computing DTH/OVH...")
+                            dth_results, ovh_results = {}, {}
+                            ptv_mask = dose_masks.get(selected_ptv) if selected_ptv else None
+                            if ptv_mask is not None:
+                                ptv_arr = sitk.GetArrayFromImage(ptv_mask)
+                                spacing = dose_image.GetSpacing()
+                                for oar_name in selected_oars:
+                                    oar_mask = dose_masks.get(oar_name)
+                                    if oar_mask is not None:
+                                        oar_arr = sitk.GetArrayFromImage(oar_mask)
+                                        dth_results[oar_name] = compute_dth(oar_arr, ptv_arr, spacing)
+                                        ovh_results[oar_name] = compute_ovh(oar_arr, ptv_arr, spacing)
+
+                            st.session_state['dth_results'] = dth_results
+                            st.session_state['ovh_results'] = ovh_results
+                        progress.progress(100, text="All features extracted!")
+                    except Exception as e:
+                        progress.empty()
+                        st.error(f"Dose analysis failed: {e}")
+
+                else:
+                    progress.progress(100, text="Done!")
+
+                st.success(
+                    f"Imaging features: {'OK' if imaging_ok else 'skipped'}"
+                    + (f" | Dose features: {len(st.session_state.get('dose_features_df', []))} ROIs" if dose_image else "")
                 )
                 st.rerun()
 
-    # Display cached results
+    # Display cached imaging results
     if st.session_state.features_df is not None:
         render_results(
             st.session_state.features_df,
@@ -817,14 +706,43 @@ def beginner_mode():
             key_prefix='',
         )
 
-    # Dosomics section
-    dose_image = st.session_state.get('dose_image')
-    ct_image = st.session_state.get('dicom_image')
-    if dose_image is not None and ct_image is not None and st.session_state.rois is not None:
-        render_dosomics_section(
-            ct_image, dose_image, st.session_state.rois, st.session_state.roi_handler,
-            key_prefix='',
-        )
+    # Display cached dose results
+    dose_df = st.session_state.get('dose_features_df')
+    if dose_df is not None and not dose_df.empty:
+        with section_card():
+            st.markdown("#### Dose Feature Matrix")
+            st.dataframe(dose_df, use_container_width=True)
+            exporter = ResultsExporter()
+            csv = exporter.to_csv(dose_df)
+            st.download_button(
+                label="Download Dose Features (CSV)", data=csv,
+                file_name="dose_features.csv", mime="text/csv",
+            )
+
+        dth_results = st.session_state.get('dth_results', {})
+        ovh_results = st.session_state.get('ovh_results', {})
+        if dth_results or ovh_results:
+            import plotly.graph_objects as go
+            with section_card():
+                st.markdown("#### Spatial Relationship Analysis")
+                st.caption("DTH = Distance-to-Target Histogram | OVH = Overlap Volume Histogram")
+                dth_tab, ovh_tab = st.tabs(["DTH Curves", "OVH Curves"])
+                with dth_tab:
+                    fig = go.Figure()
+                    for name, (bins, fracs) in dth_results.items():
+                        fig.add_trace(go.Scatter(x=bins, y=fracs*100, mode='lines+markers', name=name, marker_size=4))
+                    fig.update_layout(title="DTH", xaxis_title="Distance to Target (mm)",
+                                      yaxis_title="OAR Volume Fraction (%)",
+                                      legend=dict(orientation="h", yanchor="bottom", y=-0.3), margin=dict(t=40,b=80))
+                    st.plotly_chart(fig, use_container_width=True)
+                with ovh_tab:
+                    fig = go.Figure()
+                    for name, (dists, fracs) in ovh_results.items():
+                        fig.add_trace(go.Scatter(x=dists, y=fracs*100, mode='lines+markers', name=name, marker_size=4))
+                    fig.update_layout(title="OVH", xaxis_title="Distance from Target Surface (mm)",
+                                      yaxis_title="Cumulative OAR Overlap (%)",
+                                      legend=dict(orientation="h", yanchor="bottom", y=-0.3), margin=dict(t=40,b=80))
+                    st.plotly_chart(fig, use_container_width=True)
 
 
 # ─────────────────────────────────────────────
@@ -992,12 +910,14 @@ def advanced_mode():
         if verified:
             st.session_state.adv_verification_complete = True
 
-    # Step 5: Extraction
+    # Step 5: Combined Extraction (imaging + dose)
     if st.session_state.adv_verification_complete:
         init_state({'adv_feature_extractor': RadiomicsFeatureExtractor()})
 
         rois = st.session_state.adv_rois
         roi_names = st.session_state.adv_roi_handler.get_roi_names(rois)
+        dose_image = st.session_state.get('adv_dose_image')
+        ct_image = st.session_state.adv_preprocessed_image or st.session_state.adv_dicom_image
 
         with section_card():
             st.markdown("#### 5. Extract Features")
@@ -1006,17 +926,111 @@ def advanced_mode():
                 default=roi_names[:1], key='adv_feature_rois',
             )
 
-            if st.button("Extract Features", key='adv_extract_btn'):
-                run_extraction(
+            # PTV selector (only if dose available)
+            selected_ptv = None
+            selected_oars = []
+            if dose_image is not None:
+                ptv_candidates = find_ptv_rois(roi_names)
+                oar_options = [n for n in roi_names if n not in ptv_candidates]
+                col_ptv, col_oar = st.columns(2)
+                with col_ptv:
+                    st.markdown("**Target for DTH/OVH**")
+                    selected_ptv = st.selectbox(
+                        "PTV/Target", ptv_candidates if ptv_candidates else roi_names,
+                        key='adv_ptv_select',
+                    )
+                with col_oar:
+                    st.markdown("**OARs for DTH/OVH**")
+                    selected_oars = st.multiselect(
+                        "Select OARs", oar_options,
+                        default=oar_options[:3] if len(oar_options) > 3 else oar_options,
+                        key='adv_oar_select',
+                    )
+
+            if st.button("Extract All Features", key='adv_extract_btn'):
+                progress = st.progress(0, text="Starting extraction...")
+
+                # Step 1: Imaging features
+                progress.progress(10, text="Extracting imaging features...")
+                imaging_ok = run_extraction(
                     st.session_state.adv_feature_extractor,
-                    st.session_state.adv_preprocessed_image or st.session_state.adv_dicom_image,
-                    rois, selected_rois, key_prefix='adv_',
+                    ct_image, rois, selected_rois, key_prefix='adv_',
                     feature_classes=feature_classes,
                     filter_settings=filter_settings,
                 )
+                progress.progress(50, text="Imaging features done")
+
+                # Step 2: Dose features + DTH/OVH
+                if dose_image is not None and imaging_ok:
+                    try:
+                        from radiomics import featureextractor
+                        import plotly.graph_objects as go
+
+                        progress.progress(55, text="Creating ROI masks...")
+                        dose_extractor = RadiomicsFeatureExtractor()
+                        target_names = [selected_ptv] + selected_oars if selected_ptv else []
+                        ct_masks = {}
+                        for roi in rois:
+                            if roi.name in target_names:
+                                try:
+                                    m = dose_extractor.convert_roi_to_mask(roi, None, st.session_state.adv_dicom_image)
+                                    if sitk.GetArrayFromImage(m).sum() > 0:
+                                        ct_masks[roi.name] = m
+                                except Exception:
+                                    pass
+
+                        progress.progress(65, text="Resampling to dose grid...")
+                        dose_masks = {}
+                        for name, ct_m in ct_masks.items():
+                            try:
+                                dm = resample_mask_to_image(ct_m, dose_image)
+                                if sitk.GetArrayFromImage(dm).sum() > 0:
+                                    dose_masks[name] = dm
+                                else:
+                                    try:
+                                        dm2 = dose_extractor.convert_roi_to_mask(
+                                            next(r for r in rois if r.name == name), None, dose_image)
+                                        if sitk.GetArrayFromImage(dm2).sum() > 0:
+                                            dose_masks[name] = dm2
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+
+                        progress.progress(75, text="Extracting dose features...")
+                        if dose_masks:
+                            df_dose = extract_dose_features(dose_image, dose_masks)
+                            st.session_state['adv_dose_features_df'] = df_dose
+
+                            progress.progress(85, text="Computing DTH/OVH...")
+                            dth_results, ovh_results = {}, {}
+                            ptv_mask = dose_masks.get(selected_ptv) if selected_ptv else None
+                            if ptv_mask is not None:
+                                ptv_arr = sitk.GetArrayFromImage(ptv_mask)
+                                spacing = dose_image.GetSpacing()
+                                for oar_name in selected_oars:
+                                    oar_mask = dose_masks.get(oar_name)
+                                    if oar_mask is not None:
+                                        oar_arr = sitk.GetArrayFromImage(oar_mask)
+                                        dth_results[oar_name] = compute_dth(oar_arr, ptv_arr, spacing)
+                                        ovh_results[oar_name] = compute_ovh(oar_arr, ptv_arr, spacing)
+
+                            st.session_state['adv_dth_results'] = dth_results
+                            st.session_state['adv_ovh_results'] = ovh_results
+                        progress.progress(100, text="All features extracted!")
+                    except Exception as e:
+                        progress.empty()
+                        st.error(f"Dose analysis failed: {e}")
+                else:
+                    progress.progress(100, text="Done!")
+
+                st.success(
+                    f"Imaging features: {'OK' if imaging_ok else 'skipped'}"
+                    + (f" | Dose features: {len(st.session_state.get('adv_dose_features_df', []))} ROIs" if dose_image else "")
+                )
                 st.rerun()
 
-    # Display cached results
+    # Display cached imaging results
     if st.session_state.adv_features_df is not None:
         render_results(
             st.session_state.adv_features_df,
@@ -1024,14 +1038,43 @@ def advanced_mode():
             key_prefix='adv_', show_report=True,
         )
 
-    # Dosomics section
-    dose_image = st.session_state.get('adv_dose_image')
-    ct_image = st.session_state.get('adv_dicom_image')
-    if dose_image is not None and ct_image is not None and st.session_state.adv_rois is not None:
-        render_dosomics_section(
-            ct_image, dose_image, st.session_state.adv_rois, st.session_state.adv_roi_handler,
-            key_prefix='adv_',
-        )
+    # Display cached dose results
+    dose_df = st.session_state.get('adv_dose_features_df')
+    if dose_df is not None and not dose_df.empty:
+        with section_card():
+            st.markdown("#### Dose Feature Matrix")
+            st.dataframe(dose_df, use_container_width=True)
+            exporter = ResultsExporter()
+            csv = exporter.to_csv(dose_df)
+            st.download_button(
+                label="Download Dose Features (CSV)", data=csv,
+                file_name="dose_features_advanced.csv", mime="text/csv",
+            )
+
+        dth_results = st.session_state.get('adv_dth_results', {})
+        ovh_results = st.session_state.get('adv_ovh_results', {})
+        if dth_results or ovh_results:
+            import plotly.graph_objects as go
+            with section_card():
+                st.markdown("#### Spatial Relationship Analysis")
+                st.caption("DTH = Distance-to-Target Histogram | OVH = Overlap Volume Histogram")
+                dth_tab, ovh_tab = st.tabs(["DTH Curves", "OVH Curves"])
+                with dth_tab:
+                    fig = go.Figure()
+                    for name, (bins, fracs) in dth_results.items():
+                        fig.add_trace(go.Scatter(x=bins, y=fracs*100, mode='lines+markers', name=name, marker_size=4))
+                    fig.update_layout(title="DTH", xaxis_title="Distance to Target (mm)",
+                                      yaxis_title="OAR Volume Fraction (%)",
+                                      legend=dict(orientation="h", yanchor="bottom", y=-0.3), margin=dict(t=40,b=80))
+                    st.plotly_chart(fig, use_container_width=True)
+                with ovh_tab:
+                    fig = go.Figure()
+                    for name, (dists, fracs) in ovh_results.items():
+                        fig.add_trace(go.Scatter(x=dists, y=fracs*100, mode='lines+markers', name=name, marker_size=4))
+                    fig.update_layout(title="OVH", xaxis_title="Distance from Target Surface (mm)",
+                                      yaxis_title="Cumulative OAR Overlap (%)",
+                                      legend=dict(orientation="h", yanchor="bottom", y=-0.3), margin=dict(t=40,b=80))
+                    st.plotly_chart(fig, use_container_width=True)
 
 
 if __name__ == "__main__":
