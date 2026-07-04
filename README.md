@@ -403,6 +403,27 @@ python3 -m compileall app.py src tests
 - Plotly
 - SQLite
 
+## Citation
+
+如果使用本工具发表研究，请同时引用本项目和 PyRadiomics 原始论文。
+
+Radiomics Tools:
+
+```text
+Wang, X. Radiomics Tool: Medical Image Feature Extraction & Analysis Platform.
+https://github.com/wangxs89/Radiomics-Tools
+```
+
+PyRadiomics:
+
+```text
+van Griethuysen, J. J. M., Fedorov, A., Parmar, C., Hosny, A.,
+Aucoin, N., Narayan, V., Beets-Tan, R. G. H., Fillon-Robin, J. C.,
+Pieper, S., Aerts, H. J. W. L. (2017). Computational Radiomics System
+to Decode the Radiographic Phenotype. Cancer Research, 77(21), e104-e107.
+https://doi.org/10.1158/0008-5472.CAN-17-0339
+```
+
 ## 参考
 
 - PyRadiomics Documentation: https://pyradiomics.readthedocs.io/

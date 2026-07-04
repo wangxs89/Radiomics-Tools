@@ -1215,10 +1215,20 @@ def main():
     st.sidebar.markdown(
         "If you use this tool in your research, please cite:"
     )
+    st.sidebar.caption("Radiomics Tools")
     st.sidebar.code(
         "Wang, X. Radiomics Tool: Medical Image\n"
         "Feature Extraction & Analysis Platform.\n"
         "https://github.com/wangxs89/Radiomics-Tools"
+    )
+    st.sidebar.caption("PyRadiomics")
+    st.sidebar.code(
+        "van Griethuysen, J. J. M., Fedorov, A., Parmar, C.,\n"
+        "Hosny, A., Aucoin, N., Narayan, V., Beets-Tan, R. G. H.,\n"
+        "Fillon-Robin, J. C., Pieper, S., Aerts, H. J. W. L. (2017).\n"
+        "Computational Radiomics System to Decode the Radiographic Phenotype.\n"
+        "Cancer Research, 77(21), e104-e107.\n"
+        "https://doi.org/10.1158/0008-5472.CAN-17-0339"
     )
 
     st.sidebar.markdown(get_sidebar_section_html("Contact", "mail"), unsafe_allow_html=True)
