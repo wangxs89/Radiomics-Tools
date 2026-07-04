@@ -489,8 +489,16 @@ def render_visualization_report(df_features, key_prefix: str = '') -> None:
 #  Dosomics Section
 # ─────────────────────────────────────────────
 
-def render_dosomics_section(dose_image, rois, handler, key_prefix: str = ''):
-    """Render dose feature extraction and DTH/OVH analysis."""
+def render_dosomics_section(ct_image, dose_image, rois, handler, key_prefix: str = ''):
+    """Render dose feature extraction and DTH/OVH analysis.
+
+    Args:
+        ct_image: CT SimpleITK image (used for initial mask creation)
+        dose_image: Dose SimpleITK image (target grid for features)
+        rois: list of ROI objects
+        handler: ROIHandler instance
+        key_prefix: session state key prefix
+    """
     with section_card():
         st.markdown("#### Dose Analysis")
         st.caption("Extract features from dose distribution and analyze OAR-target spatial relationships")
@@ -523,23 +531,38 @@ def render_dosomics_section(dose_image, rois, handler, key_prefix: str = ''):
                 from radiomics import featureextractor
                 import plotly.graph_objects as go
 
-                # Step 1: Create ROI masks on dose grid
-                progress.progress(10, text="Creating ROI masks on dose grid...")
+                # Step 1: Create ROI masks on CT grid, then resample to dose grid
+                progress.progress(10, text="Creating ROI masks on CT grid...")
                 dose_extractor = RadiomicsFeatureExtractor()
                 target_names = [selected_ptv] + selected_oars
-                masks_dict = {}
+                ct_masks_dict = {}
 
                 for roi in rois:
                     if roi.name in target_names:
                         try:
-                            mask = dose_extractor.convert_roi_to_mask(roi, None, dose_image)
-                            mask_arr = sitk.GetArrayFromImage(mask)
-                            if mask_arr.sum() > 0:
-                                masks_dict[roi.name] = mask
+                            ct_mask = dose_extractor.convert_roi_to_mask(roi, None, ct_image)
+                            ct_mask_arr = sitk.GetArrayFromImage(ct_mask)
+                            if ct_mask_arr.sum() > 0:
+                                ct_masks_dict[roi.name] = ct_mask
                             else:
-                                st.warning(f"ROI '{roi.name}' has no voxels on dose grid — skipped")
+                                st.warning(f"ROI '{roi.name}' has no voxels on CT grid — skipped")
                         except Exception as e:
-                            st.warning(f"Could not create mask for '{roi.name}': {e}")
+                            st.warning(f"Could not create CT mask for '{roi.name}': {e}")
+
+                progress.progress(25, text=f"Created {len(ct_masks_dict)} CT masks, resampling to dose grid...")
+
+                # Resample CT masks to dose grid
+                masks_dict = {}
+                for roi_name, ct_mask in ct_masks_dict.items():
+                    try:
+                        dose_mask = resample_mask_to_image(ct_mask, dose_image)
+                        dose_mask_arr = sitk.GetArrayFromImage(dose_mask)
+                        if dose_mask_arr.sum() > 0:
+                            masks_dict[roi_name] = dose_mask
+                        else:
+                            st.warning(f"ROI '{roi_name}' has no overlap with dose grid — skipped")
+                    except Exception as e:
+                        st.warning(f"Could not resample '{roi_name}' to dose grid: {e}")
 
                 progress.progress(30, text=f"Created {len(masks_dict)} ROI masks")
 
@@ -785,9 +808,10 @@ def beginner_mode():
 
     # Dosomics section
     dose_image = st.session_state.get('dose_image')
-    if dose_image is not None and st.session_state.rois is not None:
+    ct_image = st.session_state.get('dicom_image')
+    if dose_image is not None and ct_image is not None and st.session_state.rois is not None:
         render_dosomics_section(
-            dose_image, st.session_state.rois, st.session_state.roi_handler,
+            ct_image, dose_image, st.session_state.rois, st.session_state.roi_handler,
             key_prefix='',
         )
 
@@ -991,9 +1015,10 @@ def advanced_mode():
 
     # Dosomics section
     dose_image = st.session_state.get('adv_dose_image')
-    if dose_image is not None and st.session_state.adv_rois is not None:
+    ct_image = st.session_state.get('adv_dicom_image')
+    if dose_image is not None and ct_image is not None and st.session_state.adv_rois is not None:
         render_dosomics_section(
-            dose_image, st.session_state.adv_rois, st.session_state.adv_roi_handler,
+            ct_image, dose_image, st.session_state.adv_rois, st.session_state.adv_roi_handler,
             key_prefix='adv_',
         )
 
