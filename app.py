@@ -185,6 +185,10 @@ def load_dicom_and_rtstruct(folder_path: Path, key_prefix: str = ''):
             dose_arr = sitk.GetArrayFromImage(dose_image)
             max_dose = float(np.max(dose_arr))
             st.success(f"Dose loaded: {dose_image.GetSize()[0]}×{dose_image.GetSize()[1]}×{dose_image.GetSize()[2]}, max={max_dose:.1f} Gy")
+            st.caption(
+                f"Dose geometry — spacing: {dose_image.GetSpacing()[0]:.2f}×{dose_image.GetSpacing()[1]:.2f}×{dose_image.GetSpacing()[2]:.2f} mm, "
+                f"origin: ({dose_image.GetOrigin()[0]:.1f}, {dose_image.GetOrigin()[1]:.1f}, {dose_image.GetOrigin()[2]:.1f})"
+            )
         except Exception as e:
             st.warning(f"Could not load dose image: {e}")
 
@@ -560,9 +564,18 @@ def render_dosomics_section(ct_image, dose_image, rois, handler, key_prefix: str
                         if dose_mask_arr.sum() > 0:
                             masks_dict[roi_name] = dose_mask
                         else:
-                            st.warning(f"ROI '{roi_name}' has no overlap with dose grid — skipped")
+                            # Fallback: try creating mask directly on dose grid
+                            direct_mask = dose_extractor.convert_roi_to_mask(
+                                next(r for r in rois if r.name == roi_name), None, dose_image,
+                            )
+                            direct_arr = sitk.GetArrayFromImage(direct_mask)
+                            if direct_arr.sum() > 0:
+                                masks_dict[roi_name] = direct_mask
+                                st.info(f"ROI '{roi_name}': used direct dose-grid mask (resample had no overlap)")
+                            else:
+                                st.warning(f"ROI '{roi_name}' has no overlap with dose grid — skipped")
                     except Exception as e:
-                        st.warning(f"Could not resample '{roi_name}' to dose grid: {e}")
+                        st.warning(f"Could not process '{roi_name}' for dose grid: {e}")
 
                 progress.progress(30, text=f"Created {len(masks_dict)} ROI masks")
 

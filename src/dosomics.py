@@ -7,29 +7,62 @@ from scipy.ndimage import distance_transform_edt
 
 
 def load_dose_image(file_paths: List[str]) -> sitk.Image:
-    """Load RTDOSE DICOM series into a SimpleITK image with dose values in Gy.
+    """Load RTDOSE DICOM into a SimpleITK image with dose values in Gy.
 
-    Applies DoseGridScaling from DICOM metadata to convert raw pixel values
-    to absolute dose (Gy).
+    Uses pydicom directly for precise geometry handling, since RTDOSE
+    stores the full 3D dose grid in a single file with specific DICOM tags.
     """
-    reader = sitk.ImageSeriesReader()
-    reader.SetFileNames(file_paths)
-    dose_image = reader.Execute()
+    ds = pydicom.dcmread(str(file_paths[0]))
 
-    # Apply DoseGridScaling from DICOM header
-    first_ds = pydicom.dcmread(str(file_paths[0]), stop_before_pixels=True)
-    scaling = float(getattr(first_ds, 'DoseGridScaling', 1.0))
+    # Grid dimensions
+    rows = int(ds.Rows)
+    cols = int(ds.Columns)
+    num_slices = int(getattr(ds, 'NumberOfFrames', 1))
 
-    arr = sitk.GetArrayFromImage(dose_image).astype(np.float64)
-    arr = arr * scaling
+    # Pixel data
+    pixel_data = ds.pixel_array.astype(np.float64)
+    if pixel_data.ndim == 2:
+        pixel_data = pixel_data[np.newaxis, :, :]
+    # pixel_data is (slices, rows, cols)
 
-    result = sitk.GetImageFromArray(arr)
-    result.SetSpacing(dose_image.GetSpacing())
-    result.SetOrigin(dose_image.GetOrigin())
-    if result.GetDimension() == dose_image.GetDimension():
-        result.SetDirection(dose_image.GetDirection())
+    # Apply DoseGridScaling
+    scaling = float(getattr(ds, 'DoseGridScaling', 1.0))
+    pixel_data = pixel_data * scaling
 
-    return result
+    # Geometry
+    pixel_spacing = [float(v) for v in ds.PixelSpacing]  # [row_spacing, col_spacing]
+    row_spacing = pixel_spacing[0]  # Y direction
+    col_spacing = pixel_spacing[1]  # X direction
+
+    # Z spacing from GridFrameOffsetVector or SliceThickness
+    gfov = getattr(ds, 'GridFrameOffsetVector', None)
+    if gfov and len(gfov) > 1:
+        z_positions = [float(v) for v in gfov]
+        slice_spacing = abs(z_positions[1] - z_positions[0])
+    else:
+        slice_spacing = float(getattr(ds, 'SliceThickness', row_spacing))
+
+    # Origin from ImagePositionPatient (first slice corner)
+    ipp = [float(v) for v in ds.ImagePositionPatient]  # [x, y, z] in patient coords
+    origin = (ipp[0], ipp[1], ipp[2])
+
+    # Direction cosine matrix (usually identity for RTDOSE)
+    image_orientation = getattr(ds, 'ImageOrientationPatient', [1, 0, 0, 0, 1, 0])
+    direction = (
+        float(image_orientation[0]), float(image_orientation[3]), 0.0,
+        float(image_orientation[1]), float(image_orientation[4]), 0.0,
+        0.0, 0.0, 1.0,
+    )
+
+    # Create SimpleITK image
+    # pixel_data is (z, y=rows, x=cols), SimpleITK uses (x, y, z)
+    dose_arr = np.transpose(pixel_data, (2, 1, 0))  # to (x, y, z)
+    dose_image = sitk.GetImageFromArray(dose_arr.astype(np.float64))
+    dose_image.SetSpacing((col_spacing, row_spacing, slice_spacing))
+    dose_image.SetOrigin(origin)
+    dose_image.SetDirection(direction)
+
+    return dose_image
 
 
 def resample_mask_to_image(mask: sitk.Image, target: sitk.Image) -> sitk.Image:
