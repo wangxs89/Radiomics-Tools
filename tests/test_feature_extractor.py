@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 import numpy as np
 import SimpleITK as sitk
+from src.filters import RadiomicsFilterConfig
 from src.feature_extractor import RadiomicsFeatureExtractor
 
 
@@ -60,3 +61,30 @@ def test_feature_extractor_handles_empty_mask():
     features = extractor.extract_features(image, mask)
 
     assert features is None or len(features) == 0
+
+
+def test_feature_extractor_enables_configured_image_types():
+    settings = RadiomicsFilterConfig.build_settings(
+        enabled_filters=['original', 'log', 'square'],
+        log_sigmas=[1.0, 2.0],
+    )
+
+    extractor = RadiomicsFeatureExtractor(filter_settings=settings)
+
+    assert extractor.extractor.enabledImagetypes == {
+        'Original': {},
+        'LoG': {'sigma': [1.0, 2.0]},
+        'Square': {},
+    }
+
+
+def test_feature_extractor_filters_wavelet_subbands():
+    settings = RadiomicsFilterConfig.build_settings(
+        enabled_filters=['wavelet'],
+        wavelet_types=['LLH'],
+    )
+    extractor = RadiomicsFeatureExtractor(filter_settings=settings)
+
+    assert extractor._keep_feature_for_selected_filters('wavelet-LLH_firstorder_Mean')
+    assert not extractor._keep_feature_for_selected_filters('wavelet-HHH_firstorder_Mean')
+    assert extractor._keep_feature_for_selected_filters('original_firstorder_Mean')

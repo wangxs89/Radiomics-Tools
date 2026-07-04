@@ -29,7 +29,10 @@ class RadiomicsFeatureExtractor:
             }
 
         self.feature_classes = feature_classes
-        self.filter_settings = filter_settings or {'enabledImageTypes': ['Original']}
+        self.filter_settings = filter_settings or {
+            'enabledImageTypes': ['Original'],
+            'imageTypeSettings': {'Original': {}},
+        }
 
         # 创建特征提取器
         self.extractor = featureextractor.RadiomicsFeatureExtractor()
@@ -42,9 +45,36 @@ class RadiomicsFeatureExtractor:
             if enabled:
                 self.extractor.enableFeatureClassByName(feature_class)
 
-        # 配置滤波器
-        if 'enabledImageTypes' in self.filter_settings:
-            self.extractor.settings['enabledImageTypes'] = self.filter_settings['enabledImageTypes']
+        # 配置滤波器 / image types
+        self.extractor.disableAllImageTypes()
+        image_type_settings = self.filter_settings.get('imageTypeSettings')
+        if image_type_settings:
+            self.extractor.enableImageTypes(**image_type_settings)
+        else:
+            self._enable_legacy_image_types(self.filter_settings.get('enabledImageTypes', ['Original']))
+
+    def _enable_legacy_image_types(self, enabled_image_types: List[str]) -> None:
+        """Enable image types from the app's older display-label format."""
+        image_types = {}
+        log_sigmas = []
+
+        for image_type in enabled_image_types:
+            if image_type.startswith('LoG-sigma-'):
+                try:
+                    log_sigmas.append(float(image_type.replace('LoG-sigma-', '')))
+                except ValueError:
+                    continue
+            elif image_type.startswith('Wavelet-'):
+                image_types['Wavelet'] = {}
+            else:
+                image_types[image_type] = {}
+
+        if log_sigmas:
+            image_types['LoG'] = {'sigma': log_sigmas}
+        if not image_types:
+            image_types['Original'] = {}
+
+        self.extractor.enableImageTypes(**image_types)
 
     def convert_dicom_series_to_sitk(self, dicom_series) -> sitk.Image:
         """将 DICOM 序列转换为 SimpleITK Image"""
@@ -163,12 +193,23 @@ class RadiomicsFeatureExtractor:
             features = {}
             for key, value in result.items():
                 if not key.startswith('diagnostics_'):
+                    if not self._keep_feature_for_selected_filters(key):
+                        continue
                     features[key] = float(value)
 
             return features
         except Exception as e:
             print(f"特征提取失败: {e}")
             return None
+
+    def _keep_feature_for_selected_filters(self, key: str) -> bool:
+        selected_subbands = self.filter_settings.get('selectedWaveletSubbands')
+        if not selected_subbands or not key.startswith('wavelet-'):
+            return True
+
+        prefix = key.split('_', 1)[0]
+        subband = prefix.replace('wavelet-', '').upper()
+        return subband in selected_subbands
 
     def extract_to_dataframe(self, image: sitk.Image, mask: sitk.Image,
                             roi_name: str = "ROI") -> Optional[pd.DataFrame]:

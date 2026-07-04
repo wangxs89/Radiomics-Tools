@@ -17,7 +17,8 @@ from src.filters import RadiomicsFilterConfig
 from src.report_generator import ReportGenerator
 from src.dosomics import (
     load_dose_image, compute_dth, compute_ovh, compute_dvh,
-    find_ptv_rois, extract_dose_features, resample_mask_to_image,
+    find_ptv_rois, extract_dose_features, image_spacing_to_array_spacing,
+    resample_mask_to_image,
 )
 from src.ui_theme import APP_CSS, get_step_indicator_html, get_header_html, get_sidebar_logo_html, get_hero_banner_html, get_footer_html
 
@@ -35,6 +36,22 @@ def init_state(defaults: dict) -> None:
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+def clear_extraction_results(key_prefix: str = '') -> None:
+    """Clear cached extraction outputs before starting a new run."""
+    st.session_state[f'{key_prefix}features_df'] = None
+    st.session_state[f'{key_prefix}features_metadata'] = {}
+    st.session_state[f'{key_prefix}dose_features_df'] = None
+    st.session_state[f'{key_prefix}dth_results'] = {}
+    st.session_state[f'{key_prefix}ovh_results'] = {}
+
+
+def ensure_feature_extractor(key: str) -> None:
+    """Create a feature extractor when session state has no usable instance."""
+    extractor = st.session_state.get(key)
+    if extractor is None or not hasattr(extractor, 'convert_roi_to_mask'):
+        st.session_state[key] = RadiomicsFeatureExtractor()
 
 
 @contextmanager
@@ -145,17 +162,13 @@ def load_dicom_and_rtstruct(folder_path: Path, key_prefix: str = ''):
         reader.SetFileNames(selected['files'])
         sitk_image = reader.Execute()
 
-        first_ds = pydicom.dcmread(str(selected['files'][0]), stop_before_pixels=True)
-        slope = float(getattr(first_ds, 'RescaleSlope', 1.0))
-        intercept = float(getattr(first_ds, 'RescaleIntercept', 0.0))
-
         original_spacing = sitk_image.GetSpacing()
         original_origin = sitk_image.GetOrigin()
         original_dim = sitk_image.GetDimension()
 
+        # SimpleITK/GDCM already applies DICOM rescale slope/intercept for CT.
+        # Reapplying it here would shift HU values a second time.
         arr = sitk.GetArrayFromImage(sitk_image).astype(np.float32)
-        if slope != 1.0 or intercept != 0.0:
-            arr = arr * slope + intercept
 
         new_image = sitk.GetImageFromArray(arr)
         new_image.SetSpacing(original_spacing)
@@ -592,7 +605,7 @@ def beginner_mode():
     # Step 2: Combined Extraction (imaging + dose)
     if st.session_state.verification_complete:
         try:
-            init_state({'feature_extractor': RadiomicsFeatureExtractor()})
+            ensure_feature_extractor('feature_extractor')
         except Exception as e:
             st.error(f"Failed to initialize feature extractor: {e}")
             st.stop()
@@ -607,6 +620,7 @@ def beginner_mode():
         with section_card():
             st.markdown("#### 2. Extract Features")
 
+            selected_rois = []
             if not roi_names:
                 st.warning("No ROIs available for extraction")
             else:
@@ -637,9 +651,10 @@ def beginner_mode():
             else:
                 selected_oars = []
 
-            try:
-                if st.button("Extract All Features"):
-                    progress = st.progress(0, text="Starting extraction...")
+            if st.button("Extract All Features"):
+                progress = st.progress(0, text="Starting extraction...")
+                try:
+                    clear_extraction_results('')
 
                     # Step 1: Imaging features
                     progress.progress(10, text="Extracting imaging features...")
@@ -649,80 +664,95 @@ def beginner_mode():
                     )
                     progress.progress(50, text="Imaging features done")
 
-                # Step 2: Dose features + DTH/OVH (if dose available)
-                if dose_image is not None and imaging_ok:
-                    try:
-                        from radiomics import featureextractor
-                        import plotly.graph_objects as go
+                    # Step 2: Dose features + DTH/OVH (if dose available)
+                    if dose_image is not None and imaging_ok:
+                        try:
+                            progress.progress(55, text="Creating ROI masks...")
+                            dose_extractor = RadiomicsFeatureExtractor()
+                            target_names = [selected_ptv] + selected_oars if selected_ptv else []
+                            ct_masks = {}
+                            for roi in rois:
+                                if roi.name in target_names:
+                                    try:
+                                        m = dose_extractor.convert_roi_to_mask(roi, None, ct_image)
+                                        if sitk.GetArrayFromImage(m).sum() > 0:
+                                            ct_masks[roi.name] = m
+                                    except Exception:
+                                        pass
 
-                        progress.progress(55, text="Creating ROI masks...")
-                        dose_extractor = RadiomicsFeatureExtractor()
-                        target_names = [selected_ptv] + selected_oars if selected_ptv else []
-                        ct_masks = {}
-                        for roi in rois:
-                            if roi.name in target_names:
+                            progress.progress(65, text="Resampling to dose grid...")
+                            dose_masks = {}
+                            for name, ct_m in ct_masks.items():
                                 try:
-                                    m = dose_extractor.convert_roi_to_mask(roi, None, ct_image)
-                                    if sitk.GetArrayFromImage(m).sum() > 0:
-                                        ct_masks[roi.name] = m
+                                    dm = resample_mask_to_image(ct_m, dose_image)
+                                    if sitk.GetArrayFromImage(dm).sum() > 0:
+                                        dose_masks[name] = dm
+                                    else:
+                                        try:
+                                            dm2 = dose_extractor.convert_roi_to_mask(
+                                                next(r for r in rois if r.name == name), None, dose_image)
+                                            if sitk.GetArrayFromImage(dm2).sum() > 0:
+                                                dose_masks[name] = dm2
+                                        except Exception:
+                                            pass
                                 except Exception:
                                     pass
 
-                        progress.progress(65, text="Resampling to dose grid...")
-                        dose_masks = {}
-                        for name, ct_m in ct_masks.items():
-                            try:
-                                dm = resample_mask_to_image(ct_m, dose_image)
-                                if sitk.GetArrayFromImage(dm).sum() > 0:
-                                    dose_masks[name] = dm
+                            progress.progress(75, text="Extracting dose features...")
+                            if dose_masks:
+                                df_dose = extract_dose_features(dose_image, dose_masks)
+
+                                if df_dose.empty:
+                                    st.warning("Dose masks were created, but no dose features could be extracted.")
                                 else:
-                                    try:
-                                        dm2 = dose_extractor.convert_roi_to_mask(
-                                            next(r for r in rois if r.name == name), None, dose_image)
-                                        if sitk.GetArrayFromImage(dm2).sum() > 0:
-                                            dose_masks[name] = dm2
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
+                                    st.session_state['dose_features_df'] = df_dose
 
-                        progress.progress(75, text="Extracting dose features...")
-                        if dose_masks:
-                            df_dose = extract_dose_features(dose_image, dose_masks)
-                            st.session_state['dose_features_df'] = df_dose
+                                    progress.progress(85, text="Computing DTH/OVH...")
+                                    dth_results, ovh_results = {}, {}
+                                    ptv_mask = dose_masks.get(selected_ptv) if selected_ptv else None
+                                    if ptv_mask is not None:
+                                        ptv_arr = sitk.GetArrayFromImage(ptv_mask)
+                                        spacing = image_spacing_to_array_spacing(dose_image)
+                                        for oar_name in selected_oars:
+                                            oar_mask = dose_masks.get(oar_name)
+                                            if oar_mask is not None:
+                                                oar_arr = sitk.GetArrayFromImage(oar_mask)
+                                                dth_results[oar_name] = compute_dth(oar_arr, ptv_arr, spacing)
+                                                ovh_results[oar_name] = compute_ovh(oar_arr, ptv_arr, spacing)
 
-                            progress.progress(85, text="Computing DTH/OVH...")
-                            dth_results, ovh_results = {}, {}
-                            ptv_mask = dose_masks.get(selected_ptv) if selected_ptv else None
-                            if ptv_mask is not None:
-                                ptv_arr = sitk.GetArrayFromImage(ptv_mask)
-                                spacing = dose_image.GetSpacing()
-                                for oar_name in selected_oars:
-                                    oar_mask = dose_masks.get(oar_name)
-                                    if oar_mask is not None:
-                                        oar_arr = sitk.GetArrayFromImage(oar_mask)
-                                        dth_results[oar_name] = compute_dth(oar_arr, ptv_arr, spacing)
-                                        ovh_results[oar_name] = compute_ovh(oar_arr, ptv_arr, spacing)
+                                    st.session_state['dth_results'] = dth_results
+                                    st.session_state['ovh_results'] = ovh_results
+                            else:
+                                st.warning(
+                                    "No valid dose masks overlapped the RTDOSE grid. "
+                                    "Try selecting a different target/OAR ROI."
+                                )
+                            progress.progress(100, text="All features extracted!")
+                        except Exception as e:
+                            progress.empty()
+                            st.error(f"Dose analysis failed: {e}")
+                    else:
+                        progress.progress(100, text="Done!")
 
-                            st.session_state['dth_results'] = dth_results
-                            st.session_state['ovh_results'] = ovh_results
-                        progress.progress(100, text="All features extracted!")
-                    except Exception as e:
-                        progress.empty()
-                        st.error(f"Dose analysis failed: {e}")
-
-                else:
-                    progress.progress(100, text="Done!")
-
-                progress.empty()
-                st.success(
-                    f"Imaging features: {'OK' if imaging_ok else 'skipped'}"
-                    + (f" | Dose features: {len(st.session_state.get('dose_features_df', []))} ROIs" if dose_image else "")
-                )
-                st.rerun()
-            except Exception as e:
-                st.error(f"Extraction failed: {e}")
-                st.exception(e)
+                    progress.empty()
+                    dose_df = st.session_state.get('dose_features_df')
+                    dose_rows = len(dose_df) if dose_df is not None else 0
+                    has_results = (
+                        st.session_state.get('features_df') is not None
+                        or (dose_df is not None and not dose_df.empty)
+                    )
+                    st.success(
+                        f"Imaging features: {'OK' if imaging_ok else 'skipped'}"
+                        + (f" | Dose features: {dose_rows} ROIs" if dose_image else "")
+                    )
+                    if has_results:
+                        st.info("Results are shown below. Use the download buttons to save CSV/Excel files.")
+                    else:
+                        st.warning("No result table was created. Check the messages above for the extraction error.")
+                except Exception as e:
+                    progress.empty()
+                    st.error(f"Extraction failed: {e}")
+                    st.exception(e)
 
     # Display cached imaging results
     if st.session_state.features_df is not None:
@@ -938,7 +968,7 @@ def advanced_mode():
 
     # Step 5: Combined Extraction (imaging + dose)
     if st.session_state.adv_verification_complete:
-        init_state({'adv_feature_extractor': RadiomicsFeatureExtractor()})
+        ensure_feature_extractor('adv_feature_extractor')
 
         rois = st.session_state.adv_rois
         roi_names = st.session_state.adv_roi_handler.get_roi_names(rois)
@@ -975,6 +1005,7 @@ def advanced_mode():
 
             if st.button("Extract All Features", key='adv_extract_btn'):
                 progress = st.progress(0, text="Starting extraction...")
+                clear_extraction_results('adv_')
 
                 # Step 1: Imaging features
                 progress.progress(10, text="Extracting imaging features...")
@@ -1026,23 +1057,32 @@ def advanced_mode():
                         progress.progress(75, text="Extracting dose features...")
                         if dose_masks:
                             df_dose = extract_dose_features(dose_image, dose_masks)
-                            st.session_state['adv_dose_features_df'] = df_dose
 
-                            progress.progress(85, text="Computing DTH/OVH...")
-                            dth_results, ovh_results = {}, {}
-                            ptv_mask = dose_masks.get(selected_ptv) if selected_ptv else None
-                            if ptv_mask is not None:
-                                ptv_arr = sitk.GetArrayFromImage(ptv_mask)
-                                spacing = dose_image.GetSpacing()
-                                for oar_name in selected_oars:
-                                    oar_mask = dose_masks.get(oar_name)
-                                    if oar_mask is not None:
-                                        oar_arr = sitk.GetArrayFromImage(oar_mask)
-                                        dth_results[oar_name] = compute_dth(oar_arr, ptv_arr, spacing)
-                                        ovh_results[oar_name] = compute_ovh(oar_arr, ptv_arr, spacing)
+                            if df_dose.empty:
+                                st.warning("Dose masks were created, but no dose features could be extracted.")
+                            else:
+                                st.session_state['adv_dose_features_df'] = df_dose
 
-                            st.session_state['adv_dth_results'] = dth_results
-                            st.session_state['adv_ovh_results'] = ovh_results
+                                progress.progress(85, text="Computing DTH/OVH...")
+                                dth_results, ovh_results = {}, {}
+                                ptv_mask = dose_masks.get(selected_ptv) if selected_ptv else None
+                                if ptv_mask is not None:
+                                    ptv_arr = sitk.GetArrayFromImage(ptv_mask)
+                                    spacing = image_spacing_to_array_spacing(dose_image)
+                                    for oar_name in selected_oars:
+                                        oar_mask = dose_masks.get(oar_name)
+                                        if oar_mask is not None:
+                                            oar_arr = sitk.GetArrayFromImage(oar_mask)
+                                            dth_results[oar_name] = compute_dth(oar_arr, ptv_arr, spacing)
+                                            ovh_results[oar_name] = compute_ovh(oar_arr, ptv_arr, spacing)
+
+                                st.session_state['adv_dth_results'] = dth_results
+                                st.session_state['adv_ovh_results'] = ovh_results
+                        else:
+                            st.warning(
+                                "No valid dose masks overlapped the RTDOSE grid. "
+                                "Try selecting a different target/OAR ROI."
+                            )
                         progress.progress(100, text="All features extracted!")
                     except Exception as e:
                         progress.empty()
@@ -1051,11 +1091,20 @@ def advanced_mode():
                     progress.progress(100, text="Done!")
 
                 progress.empty()
+                dose_df = st.session_state.get('adv_dose_features_df')
+                dose_rows = len(dose_df) if dose_df is not None else 0
+                has_results = (
+                    st.session_state.get('adv_features_df') is not None
+                    or (dose_df is not None and not dose_df.empty)
+                )
                 st.success(
                     f"Imaging features: {'OK' if imaging_ok else 'skipped'}"
-                    + (f" | Dose features: {len(st.session_state.get('adv_dose_features_df', []))} ROIs" if dose_image else "")
+                    + (f" | Dose features: {dose_rows} ROIs" if dose_image else "")
                 )
-                st.rerun()
+                if has_results:
+                    st.info("Results are shown below. Use the download buttons to save CSV/Excel files.")
+                else:
+                    st.warning("No result table was created. Check the messages above for the extraction error.")
 
     # Display cached imaging results
     if st.session_state.adv_features_df is not None:

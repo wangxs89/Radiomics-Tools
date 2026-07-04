@@ -48,32 +48,42 @@ class RadiomicsFilterConfig:
                       wavelet_types: List[str] = None) -> Dict[str, Any]:
         """构建 PyRadiomics 设置"""
         settings = {
-            'enabledImageTypes': []
+            'enabledImageTypes': [],
+            'imageTypeSettings': {},
+            'selectedWaveletSubbands': wavelet_types or []
         }
 
         if 'original' in enabled_filters:
             settings['enabledImageTypes'].append('Original')
+            settings['imageTypeSettings']['Original'] = {}
 
         if 'log' in enabled_filters:
             sigmas = log_sigmas or [1.0, 2.0, 3.0]
             for sigma in sigmas:
                 settings['enabledImageTypes'].append(f'LoG-sigma-{sigma}')
+            settings['imageTypeSettings']['LoG'] = {'sigma': sigmas}
 
         if 'wavelet' in enabled_filters:
             types = wavelet_types or ['LLL', 'LLH', 'LHL', 'LHH', 'HLL', 'HLH', 'HHL', 'HHH']
             for wt in types:
                 settings['enabledImageTypes'].append(f'Wavelet-{wt}')
+            settings['imageTypeSettings']['Wavelet'] = {}
+            settings['selectedWaveletSubbands'] = types
 
         if 'square' in enabled_filters:
             settings['enabledImageTypes'].append('Square')
+            settings['imageTypeSettings']['Square'] = {}
 
         if 'squareroot' in enabled_filters:
             settings['enabledImageTypes'].append('SquareRoot')
+            settings['imageTypeSettings']['SquareRoot'] = {}
 
         if 'exponential' in enabled_filters:
             settings['enabledImageTypes'].append('Exponential')
+            settings['imageTypeSettings']['Exponential'] = {}
 
         if 'logarithm' in enabled_filters:
             settings['enabledImageTypes'].append('Logarithm')
+            settings['imageTypeSettings']['Logarithm'] = {}
 
         return settings
