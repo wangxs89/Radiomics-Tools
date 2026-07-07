@@ -6,6 +6,16 @@ import SimpleITK as sitk
 from scipy.ndimage import distance_transform_edt
 
 
+def image_spacing_to_array_spacing(image: sitk.Image) -> Tuple[float, ...]:
+    """Return spacing in NumPy array axis order for a SimpleITK image.
+
+    SimpleITK spacing is ordered as (x, y, z), while GetArrayFromImage()
+    returns arrays ordered as (z, y, x). scipy.ndimage expects sampling in
+    array-axis order.
+    """
+    return tuple(reversed(tuple(float(v) for v in image.GetSpacing())))
+
+
 def load_dose_image(file_paths: List[str]) -> sitk.Image:
     """Load RTDOSE DICOM into a SimpleITK image with dose values in Gy.
 
@@ -46,18 +56,23 @@ def load_dose_image(file_paths: List[str]) -> sitk.Image:
     ipp = [float(v) for v in ds.ImagePositionPatient]  # [x, y, z] in patient coords
     origin = (ipp[0], ipp[1], ipp[2])
 
-    # Direction cosine matrix (usually identity for RTDOSE)
+    # Direction cosine matrix
     image_orientation = getattr(ds, 'ImageOrientationPatient', [1, 0, 0, 0, 1, 0])
+    row_direction = np.array([float(v) for v in image_orientation[:3]], dtype=float)
+    col_direction = np.array([float(v) for v in image_orientation[3:]], dtype=float)
+    slice_direction = np.cross(row_direction, col_direction)
+    if gfov and len(gfov) > 1 and float(gfov[1]) < float(gfov[0]):
+        slice_direction *= -1
     direction = (
-        float(image_orientation[0]), float(image_orientation[3]), 0.0,
-        float(image_orientation[1]), float(image_orientation[4]), 0.0,
-        0.0, 0.0, 1.0,
+        float(row_direction[0]), float(col_direction[0]), float(slice_direction[0]),
+        float(row_direction[1]), float(col_direction[1]), float(slice_direction[1]),
+        float(row_direction[2]), float(col_direction[2]), float(slice_direction[2]),
     )
 
     # Create SimpleITK image
-    # pixel_data is (z, y=rows, x=cols), SimpleITK uses (x, y, z)
-    dose_arr = np.transpose(pixel_data, (2, 1, 0))  # to (x, y, z)
-    dose_image = sitk.GetImageFromArray(dose_arr.astype(np.float64))
+    # pixel_data is (z, y=rows, x=cols). GetImageFromArray consumes that
+    # order directly and exposes image size as (x=cols, y=rows, z=frames).
+    dose_image = sitk.GetImageFromArray(pixel_data.astype(np.float64))
     dose_image.SetSpacing((col_spacing, row_spacing, slice_spacing))
     dose_image.SetOrigin(origin)
     dose_image.SetDirection(direction)

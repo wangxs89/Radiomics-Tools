@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 import numpy as np
 import SimpleITK as sitk
+from src.filters import RadiomicsFilterConfig
 from src.feature_extractor import RadiomicsFeatureExtractor
 
 
@@ -60,3 +61,78 @@ def test_feature_extractor_handles_empty_mask():
     features = extractor.extract_features(image, mask)
 
     assert features is None or len(features) == 0
+
+
+def test_feature_extractor_enables_configured_image_types():
+    settings = RadiomicsFilterConfig.build_settings(
+        enabled_filters=['original', 'log', 'square'],
+        log_sigmas=[1.0, 2.0],
+    )
+
+    extractor = RadiomicsFeatureExtractor(filter_settings=settings)
+
+    assert extractor.extractor.enabledImagetypes == {
+        'Original': {},
+        'LoG': {'sigma': [1.0, 2.0]},
+        'Square': {},
+    }
+
+
+def test_feature_extractor_filters_wavelet_subbands():
+    settings = RadiomicsFilterConfig.build_settings(
+        enabled_filters=['wavelet'],
+        wavelet_types=['LLH'],
+    )
+    extractor = RadiomicsFeatureExtractor(filter_settings=settings)
+
+    assert extractor._keep_feature_for_selected_filters('wavelet-LLH_firstorder_Mean')
+    assert not extractor._keep_feature_for_selected_filters('wavelet-HHH_firstorder_Mean')
+    assert extractor._keep_feature_for_selected_filters('original_firstorder_Mean')
+
+
+def test_filter_config_supports_extended_image_types_and_extractor_settings():
+    settings = RadiomicsFilterConfig.build_settings(
+        enabled_filters=['gradient', 'lbp2d', 'lbp3d'],
+        bin_width=12.5,
+        resampled_pixel_spacing=[1.0, 1.0, 2.0],
+        force_2d=True,
+        force_2d_dimension=2,
+    )
+
+    assert settings['imageTypeSettings'] == {
+        'Gradient': {},
+        'LBP2D': {},
+        'LBP3D': {},
+    }
+    assert settings['enabledImageTypes'] == ['Gradient', 'LBP2D', 'LBP3D']
+    assert settings['extractorSettings'] == {
+        'binWidth': 12.5,
+        'resampledPixelSpacing': [1.0, 1.0, 2.0],
+        'force2D': True,
+        'force2Ddimension': 2,
+    }
+
+
+def test_feature_extractor_applies_extractor_settings_and_shape2d():
+    settings = RadiomicsFilterConfig.build_settings(
+        enabled_filters=['original', 'gradient'],
+        bin_width=10,
+        force_2d=True,
+        force_2d_dimension=0,
+    )
+    extractor = RadiomicsFeatureExtractor(
+        feature_classes={'shape2D': True, 'firstorder': True},
+        filter_settings=settings,
+    )
+
+    assert extractor.extractor.enabledImagetypes == {
+        'Original': {},
+        'Gradient': {},
+    }
+    assert extractor.extractor.enabledFeatures == {
+        'shape2D': [],
+        'firstorder': [],
+    }
+    assert extractor.extractor.settings['binWidth'] == 10
+    assert extractor.extractor.settings['force2D'] is True
+    assert extractor.extractor.settings['force2Ddimension'] == 0
